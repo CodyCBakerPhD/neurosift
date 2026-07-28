@@ -1,77 +1,64 @@
 name: Preview Deploy (GitHub Pages)
 
-# Builds the app and publishes it to the `gh-pages` branch so changes can be
-# previewed on a fork without Cloudflare credentials. The branch is created
-# automatically on the first successful run.
+# Deploys a per-PR preview of the app to GitHub Pages using pr-preview-action,
+# which publishes the build into pr-preview/pr-<N>/ on the gh-pages branch,
+# posts the preview URL as a PR comment, and removes it when the PR closes.
 #
 # One-time setup: Settings -> Pages -> Source: "Deploy from a branch",
-# Branch: "gh-pages" / "(root)". The site is then served at
-# https://<owner>.github.io/<repo>/.
+# Branch: "gh-pages" / "(root)". Each PR preview is then served at
+# https://<owner>.github.io/<repo>/pr-preview/pr-<N>/.
 
 on:
-  push:
-    branches:
-      - main-v2
-      - "claude/**"
-  workflow_dispatch:
+  pull_request:
+    types: [opened, reopened, synchronize, closed]
 
-# Needs write access to push the built site to the gh-pages branch.
 permissions:
   contents: write
+  pull-requests: write
 
-# Only one preview build at a time; newer pushes cancel in-progress ones.
-concurrency:
-  group: pages-preview
-  cancel-in-progress: true
+concurrency: preview-${{ github.ref }}
 
 jobs:
-  build-and-deploy:
+  preview:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Update submodules
+        if: github.event.action != 'closed'
         run: git submodule update --init --recursive
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
-          node-version: '20'
+          node-version: lts/*
           cache: 'npm'
 
       - name: Install dependencies
+        if: github.event.action != 'closed'
         run: npm ci
 
-      # Build with the base path set to the Pages sub-path so assets and the
-      # client-side router resolve correctly under /<repo>/.
+      # Build with the base path pointing at the PR preview sub-directory so
+      # assets and the client-side router resolve under
+      # /<repo>/pr-preview/pr-<N>/.
       - name: Build project
+        if: github.event.action != 'closed'
         run: |
           ./devel/generate_build_info.sh
           npx tsc -b
-          npx vite build --base="/${{ github.event.repository.name }}/"
+          npx vite build \
+            --base="/${{ github.event.repository.name }}/pr-preview/pr-${{ github.event.number }}/"
 
       # GitHub Pages has no server-side SPA fallback, so route deep-links
       # through index.html by serving the same document as 404.html.
-      # .nojekyll keeps Pages from stripping files that start with an underscore.
-      - name: Prepare Pages artifact
-        run: |
-          cp dist/index.html dist/404.html
-          touch dist/.nojekyll
+      - name: Add SPA fallback
+        if: github.event.action != 'closed'
+        run: cp dist/index.html dist/404.html
 
-      # Push the built site to the gh-pages branch as a single fresh commit
-      # (force-pushed), creating the branch if it does not exist yet.
-      - name: Deploy to gh-pages branch
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          cd dist
-          git init -q
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add -A
-          git commit -q -m "Deploy preview from ${GITHUB_SHA}"
-          git branch -M gh-pages
-          git push -f \
-            "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
-            gh-pages
+      - name: Deploy preview
+        uses: rossjrw/pr-preview-action@v1
+        with:
+          source-dir: dist
+          preview-branch: gh-pages
+          umbrella-dir: pr-preview
