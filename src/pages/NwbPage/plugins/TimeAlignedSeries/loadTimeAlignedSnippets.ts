@@ -32,6 +32,8 @@ export const loadTimeAlignedSnippets = async (
     1,
     Math.min(opts.concurrency ?? 8, times.length),
   );
+  // Clamp the channel defensively; the selected series may have fewer channels.
+  const ch = Math.max(0, Math.min(channel, client.numChannels - 1));
 
   let nextIndex = 0;
   let loaded = 0;
@@ -45,8 +47,8 @@ export const loadTimeAlignedSnippets = async (
       const { timestamps, data } = await client.getDataForTimeRange(
         t + windowRange.start,
         t + windowRange.end,
-        channel,
-        channel + 1,
+        ch,
+        ch + 1,
       );
       const values = data[0] || [];
       trials[i] = {

@@ -6,10 +6,12 @@ import {
   useMemo,
   useState,
 } from "react";
+import { useNeurodataObjects } from "../../useNeurodataObjects";
 import AlignToSelectionComponent from "../PSTH/PSTHItemView/components/AlignToSelection";
 import WindowRangeComponent from "../PSTH/PSTHItemView/components/WindowRange";
 import TrialAlignedSeriesWidget from "../PSTH/PSTHItemView/TrialAlignedSeriesWidget";
 import TimeseriesClient from "../simple-timeseries/TimeseriesClient";
+import { isTimeSeriesLikeGroup } from "./detection";
 import {
   AlignedTrial,
   loadTimeAlignedSnippets,
@@ -35,6 +37,9 @@ const accordionSummaryStyle: CSSProperties = {
 
 const seriesColor = "#1f77b4";
 
+const shortName = (path: string) =>
+  path.split("/").filter(Boolean).pop() || path;
+
 const TimeAlignedSeriesView: FunctionComponent<Props> = ({
   nwbUrl,
   path,
@@ -42,42 +47,43 @@ const TimeAlignedSeriesView: FunctionComponent<Props> = ({
   width = 800,
   height = 800,
 }) => {
-  const seriesPath = secondaryPaths && secondaryPaths[0];
+  const { neurodataObjects } = useNeurodataObjects(nwbUrl);
 
-  const [client, setClient] = useState<TimeseriesClient | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  // All timeseries-like objects in the file are candidate series to align.
+  const seriesOptions = useMemo(
+    () =>
+      neurodataObjects
+        .filter((o) => o.group && isTimeSeriesLikeGroup(o.group.datasets))
+        .map((o) => o.path),
+    [neurodataObjects],
+  );
 
+  const initialSeries = secondaryPaths && secondaryPaths[0];
+  const [selectedSeriesPath, setSelectedSeriesPath] = useState<
+    string | undefined
+  >(initialSeries);
+
+  // Once the object list is known, make sure a valid series is selected.
   useEffect(() => {
-    let canceled = false;
-    setClient(null);
-    setError(null);
-    if (!seriesPath) {
-      setError("No timeseries was selected to align.");
+    if (selectedSeriesPath && seriesOptions.includes(selectedSeriesPath))
+      return;
+    if (initialSeries && seriesOptions.includes(initialSeries)) {
+      setSelectedSeriesPath(initialSeries);
       return;
     }
-    (async () => {
-      try {
-        const group = await getHdf5Group(nwbUrl, seriesPath);
-        if (!group) throw new Error(`Unable to load group: ${seriesPath}`);
-        const c = await TimeseriesClient.create(nwbUrl, group);
-        if (!canceled) setClient(c);
-      } catch (err) {
-        if (!canceled)
-          setError(err instanceof Error ? err.message : String(err));
-      }
-    })();
-    return () => {
-      canceled = true;
-    };
-  }, [nwbUrl, seriesPath]);
+    // Keep an externally-provided series even before the object list resolves.
+    if (initialSeries && seriesOptions.length === 0) return;
+    if (seriesOptions.length > 0) setSelectedSeriesPath(seriesOptions[0]);
+  }, [seriesOptions, initialSeries, selectedSeriesPath]);
 
-  if (error) {
-    return <div style={{ padding: 12, color: "#e74c3c" }}>Error: {error}</div>;
-  }
-  if (!seriesPath) {
-    return <div style={{ padding: 12 }}>No timeseries selected.</div>;
-  }
-  if (!client) {
+  if (!selectedSeriesPath) {
+    if (seriesOptions.length === 0 && neurodataObjects.length > 0) {
+      return (
+        <div style={{ padding: 12 }}>
+          No compatible TimeSeries found in this file.
+        </div>
+      );
+    }
     return <div style={{ padding: 12 }}>Loading timeseries...</div>;
   }
 
@@ -85,8 +91,9 @@ const TimeAlignedSeriesView: FunctionComponent<Props> = ({
     <TimeAlignedSeriesInner
       nwbUrl={nwbUrl}
       intervalsPath={path}
-      seriesPath={seriesPath}
-      client={client}
+      seriesPath={selectedSeriesPath}
+      seriesOptions={seriesOptions}
+      setSeriesPath={setSelectedSeriesPath}
       width={width}
       height={height}
     />
@@ -97,7 +104,8 @@ type InnerProps = {
   nwbUrl: string;
   intervalsPath: string;
   seriesPath: string;
-  client: TimeseriesClient;
+  seriesOptions: string[];
+  setSeriesPath: (p: string) => void;
   width: number;
   height: number;
 };
@@ -113,11 +121,38 @@ const TimeAlignedSeriesInner: FunctionComponent<InnerProps> = ({
   nwbUrl,
   intervalsPath,
   seriesPath,
-  client,
+  seriesOptions,
+  setSeriesPath,
   width,
   height,
 }) => {
-  const numChannels = client.numChannels;
+  // Load a client for the selected series. Keep the previous client visible
+  // while a new series loads so the controls and existing plots don't flicker.
+  const [client, setClient] = useState<TimeseriesClient | null>(null);
+  const [clientError, setClientError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let canceled = false;
+    setClientError(null);
+    (async () => {
+      try {
+        const group = await getHdf5Group(nwbUrl, seriesPath);
+        if (!group) throw new Error(`Unable to load group: ${seriesPath}`);
+        const c = await TimeseriesClient.create(nwbUrl, group);
+        if (!canceled) setClient(c);
+      } catch (err) {
+        if (!canceled) {
+          setClient(null);
+          setClientError(err instanceof Error ? err.message : String(err));
+        }
+      }
+    })();
+    return () => {
+      canceled = true;
+    };
+  }, [nwbUrl, seriesPath]);
+
+  const numChannels = client ? client.numChannels : 1;
 
   const [channel, setChannel] = useState(0);
   const [alignToVariables, setAlignToVariables] = useState<string[]>([
@@ -128,6 +163,13 @@ const TimeAlignedSeriesInner: FunctionComponent<InnerProps> = ({
     end: string;
   }>({ start: "-0.5", end: "1" });
   const [maxTrialsStr, setMaxTrialsStr] = useState("50");
+
+  // Keep the channel selection within range when the series changes.
+  useEffect(() => {
+    if (client && channel > client.numChannels - 1) {
+      setChannel(Math.max(0, client.numChannels - 1));
+    }
+  }, [client, channel]);
 
   const parseParams = (): CommittedParams | { error: string } => {
     const start = parseFloat(windowRangeStr.start);
@@ -197,6 +239,37 @@ const TimeAlignedSeriesInner: FunctionComponent<InnerProps> = ({
         }}
       >
         <details open>
+          <summary style={accordionSummaryStyle}>Timeseries</summary>
+          <div style={{ padding: "6px 8px" }}>
+            <select
+              value={seriesPath}
+              onChange={(e) => setSeriesPath(e.target.value)}
+              style={{ width: "100%" }}
+              disabled={seriesOptions.length <= 1}
+            >
+              {(seriesOptions.includes(seriesPath)
+                ? seriesOptions
+                : [seriesPath, ...seriesOptions]
+              ).map((p) => (
+                <option key={p} value={p} title={p}>
+                  {shortName(p)}
+                </option>
+              ))}
+            </select>
+            <div
+              style={{
+                color: "#666",
+                marginTop: 4,
+                wordBreak: "break-all",
+                fontSize: "0.9em",
+              }}
+            >
+              {seriesPath}
+            </div>
+          </div>
+        </details>
+        <div style={{ height: 6 }} />
+        <details open>
           <summary style={accordionSummaryStyle}>Channel</summary>
           <div style={{ padding: "6px 8px" }}>
             <label>
@@ -206,6 +279,7 @@ const TimeAlignedSeriesInner: FunctionComponent<InnerProps> = ({
                 min={0}
                 max={numChannels - 1}
                 value={channel}
+                disabled={!client}
                 onChange={(e) =>
                   setChannel(
                     Math.max(
@@ -218,8 +292,9 @@ const TimeAlignedSeriesInner: FunctionComponent<InnerProps> = ({
               />
             </label>
             <div style={{ color: "#666", marginTop: 4 }}>
-              {numChannels} channel{numChannels === 1 ? "" : "s"} ·{" "}
-              {client.samplingFrequency.toFixed(1)} Hz
+              {client
+                ? `${numChannels} channel${numChannels === 1 ? "" : "s"} · ${client.samplingFrequency.toFixed(1)} Hz`
+                : "Loading series..."}
             </div>
           </div>
         </details>
@@ -285,7 +360,13 @@ const TimeAlignedSeriesInner: FunctionComponent<InnerProps> = ({
           overflowX: "hidden",
         }}
       >
-        {committed.alignToVariables.length === 0 ? (
+        {clientError ? (
+          <div style={{ padding: 12, color: "#e74c3c" }}>
+            Error loading series: {clientError}
+          </div>
+        ) : !client ? (
+          <div style={{ padding: 12, color: "#555" }}>Loading series...</div>
+        ) : committed.alignToVariables.length === 0 ? (
           <div style={{ padding: 12 }}>
             Select one or more align-to columns.
           </div>
