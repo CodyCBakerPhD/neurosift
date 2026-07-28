@@ -5,7 +5,7 @@ import {
   RemoteH5Group,
   RemoteH5Subdataset,
   RemoteH5Subgroup,
-  // getRemoteH5File,
+  getRemoteH5File,
   globalRemoteH5FileStats,
 } from "../RemoteH5File";
 // import { Canceler } from "../helpers";
@@ -382,14 +382,21 @@ class RemoteH5FileLindi {
       pathWithoutBeginningSlash + "/.zattrs",
     )) as ZMetaDataZAttrs;
     if (zattrs && zattrs["_EXTERNAL_ARRAY_LINK"]) {
-      throw Error("External array link not supported on server side");
-      // const externalArrayLink = zattrs["_EXTERNAL_ARRAY_LINK"];
-      // let url0 = externalArrayLink.url;
-      // if (this.#cacheDisabled) {
-      //   url0 += `?cacheBust=${Date.now()}`;
-      // }
-      // const a = await getRemoteH5File(url0);
-      // return a.getDatasetData(externalArrayLink.name, o);
+      // The dataset itself is not stored in the LINDI file; it lives in an
+      // external HDF5 file referenced by _EXTERNAL_ARRAY_LINK (commonly the
+      // original NWB file on the archive). Resolve it by opening that file
+      // directly with the HDF5 reader, which reads chunks in the browser via
+      // the h5wasm worker, and reading the referenced dataset from there.
+      const externalArrayLink = zattrs["_EXTERNAL_ARRAY_LINK"] as {
+        url: string;
+        name: string;
+      };
+      let url0 = externalArrayLink.url;
+      if (this.#cacheDisabled) {
+        url0 += `?cacheBust=${Date.now()}`;
+      }
+      const a = await getRemoteH5File(url0);
+      return a.getDatasetData(externalArrayLink.name, o);
     }
 
     const ret = await lindiDatasetDataLoader({
