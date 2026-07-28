@@ -1,9 +1,12 @@
 name: Preview Deploy (GitHub Pages)
 
-# Builds the app and publishes it to GitHub Pages so changes can be previewed
-# on a fork without Cloudflare credentials. Enable Pages for the repository
-# with "Source: GitHub Actions" (Settings -> Pages) for this to work.
-# The site is served at https://<owner>.github.io/<repo>/.
+# Builds the app and publishes it to the `gh-pages` branch so changes can be
+# previewed on a fork without Cloudflare credentials. The branch is created
+# automatically on the first successful run.
+#
+# One-time setup: Settings -> Pages -> Source: "Deploy from a branch",
+# Branch: "gh-pages" / "(root)". The site is then served at
+# https://<owner>.github.io/<repo>/.
 
 on:
   push:
@@ -12,22 +15,18 @@ on:
       - "claude/**"
   workflow_dispatch:
 
+# Needs write access to push the built site to the gh-pages branch.
 permissions:
-  contents: read
-  pages: write
-  id-token: write
+  contents: write
 
-# Only one Pages deployment at a time; newer pushes cancel in-progress ones.
+# Only one preview build at a time; newer pushes cancel in-progress ones.
 concurrency:
-  group: pages
+  group: pages-preview
   cancel-in-progress: true
 
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
 
     steps:
       - uses: actions/checkout@v4
@@ -44,28 +43,35 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Configure GitHub Pages
-        id: pages
-        uses: actions/configure-pages@v5
-
       # Build with the base path set to the Pages sub-path so assets and the
       # client-side router resolve correctly under /<repo>/.
       - name: Build project
         run: |
           ./devel/generate_build_info.sh
           npx tsc -b
-          npx vite build --base="${{ steps.pages.outputs.base_path }}/"
+          npx vite build --base="/${{ github.event.repository.name }}/"
 
       # GitHub Pages has no server-side SPA fallback, so route deep-links
       # through index.html by serving the same document as 404.html.
-      - name: Add SPA fallback
-        run: cp dist/index.html dist/404.html
+      # .nojekyll keeps Pages from stripping files that start with an underscore.
+      - name: Prepare Pages artifact
+        run: |
+          cp dist/index.html dist/404.html
+          touch dist/.nojekyll
 
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: dist
-
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
+      # Push the built site to the gh-pages branch as a single fresh commit
+      # (force-pushed), creating the branch if it does not exist yet.
+      - name: Deploy to gh-pages branch
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd dist
+          git init -q
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -q -m "Deploy preview from ${GITHUB_SHA}"
+          git branch -M gh-pages
+          git push -f \
+            "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+            gh-pages
