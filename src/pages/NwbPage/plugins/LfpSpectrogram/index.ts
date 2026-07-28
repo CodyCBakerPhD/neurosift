@@ -13,7 +13,7 @@ const isUnderLfpModule = (path: string): boolean => {
 
 export const lfpSpectrogramPlugin: NwbObjectViewPlugin = {
   name: "LfpSpectrogram",
-  label: "LFP Spectrogram",
+  label: "Spectrogram",
   canHandle: async ({
     nwbUrl,
     path,
