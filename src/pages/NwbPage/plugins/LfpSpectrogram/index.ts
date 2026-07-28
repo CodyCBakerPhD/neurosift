@@ -43,6 +43,10 @@ export const lfpSpectrogramPlugin: NwbObjectViewPlugin = {
     return hasTimestamps || hasStartTime;
   },
   component: LfpSpectrogramView,
+  // Launch from a dedicated button next to the object (like PSTH) rather than
+  // rendering inline alongside the main LFP timeseries view.
+  launchableFromTable: true,
+  hideFromObjectView: true,
   requiresWindowDimensions: true,
   showInMultiView: false,
 };
