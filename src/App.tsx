@@ -438,7 +438,7 @@ const AppContent = () => {
 function App() {
   return (
     <ThemeProvider theme={theme}>
-      <Router>
+      <Router basename={import.meta.env.BASE_URL}>
         <AIComponentRegistryProvider>
           <LegacyUrlHandler />
           <AppContent />

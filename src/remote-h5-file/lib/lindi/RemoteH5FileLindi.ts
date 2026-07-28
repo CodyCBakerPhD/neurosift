@@ -382,6 +382,9 @@ class RemoteH5FileLindi {
       pathWithoutBeginningSlash + "/.zattrs",
     )) as ZMetaDataZAttrs;
     if (zattrs && zattrs["_EXTERNAL_ARRAY_LINK"]) {
+      // The dataset is not stored in the LINDI file; it lives in an external
+      // HDF5 file. Callers (see hdf5Interface.getHdf5DatasetData) handle this
+      // by falling back to a direct read from the underlying blob.
       throw Error("External array link not supported on server side");
       // const externalArrayLink = zattrs["_EXTERNAL_ARRAY_LINK"];
       // let url0 = externalArrayLink.url;
