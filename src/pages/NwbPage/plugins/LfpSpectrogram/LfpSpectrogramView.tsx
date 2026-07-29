@@ -341,7 +341,7 @@ const LfpSpectrogramInner: FunctionComponent<InnerProps> = ({
         )}
 
         {labeledField(
-          `Max freq (Hz, ≤${nyquist.toFixed(0)})`,
+          "Max freq (Hz)",
           <input
             type="number"
             min={1}
