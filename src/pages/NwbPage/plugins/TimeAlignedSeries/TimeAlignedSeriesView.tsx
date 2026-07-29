@@ -232,6 +232,10 @@ const TimeAlignedSeriesInner: FunctionComponent<InnerProps> = ({
     const v = parseFloat(stdMultipleStr);
     return isNaN(v) || v < 0 ? 1 : v;
   }, [stdMultipleStr]);
+  // How to show groups: overlaid on one plot, or split into side-by-side plots.
+  const [groupDisplay, setGroupDisplay] = useState<"overlay" | "split">(
+    "overlay",
+  );
 
   // Group by (live). Only offered when the table has categorical columns.
   const categoricalOptions = useCategoricalOptions(nwbUrl, intervalsPath);
@@ -279,10 +283,15 @@ const TimeAlignedSeriesInner: FunctionComponent<InnerProps> = ({
   const plotAreaWidth = width - controlsWidth;
   const gap = 8;
   const numAlign = alignToVariables.length || 1;
+  const grouping = !!groups && !!groupByValues && groupByVariable !== "";
+  const split = grouping && groupDisplay === "split";
   const panelWidth = Math.max(
     240,
     (plotAreaWidth - 20 - gap * (numAlign - 1)) / numAlign,
   );
+  // When splitting into one plot per group, use a fixed cell width and let the
+  // channel row scroll horizontally.
+  const cellWidth = split ? 340 : panelWidth;
   const panelHeight =
     selectedChannels.length > 1
       ? 320
@@ -381,6 +390,7 @@ const TimeAlignedSeriesInner: FunctionComponent<InnerProps> = ({
                   setGroupByVariable={setGroupByVariable}
                   nwbUrl={nwbUrl}
                   path={intervalsPath}
+                  label="Group intervals by:"
                 />
               </div>
             )}
@@ -445,6 +455,23 @@ const TimeAlignedSeriesInner: FunctionComponent<InnerProps> = ({
                 />
               </label>
             </div>
+            {groupByVariable !== "" && (
+              <>
+                <hr style={{ margin: "8px 0", borderColor: "#dde4ed" }} />
+                <label>
+                  Group display:&nbsp;
+                  <select
+                    value={groupDisplay}
+                    onChange={(e) =>
+                      setGroupDisplay(e.target.value as "overlay" | "split")
+                    }
+                  >
+                    <option value="overlay">Overlay</option>
+                    <option value="split">Split (side by side)</option>
+                  </select>
+                </label>
+              </>
+            )}
           </div>
         </details>
       </div>
@@ -512,34 +539,35 @@ const TimeAlignedSeriesInner: FunctionComponent<InnerProps> = ({
               >
                 Channel {ch}
               </div>
-              <div style={{ display: "flex", gap }}>
+              <div
+                style={{
+                  display: "flex",
+                  gap,
+                  overflowX: split ? "auto" : "hidden",
+                  maxWidth: plotAreaWidth - 4,
+                }}
+              >
                 {alignToVariables.map((alignToVariable) => (
-                  <div
+                  <AlignBlock
                     key={alignToVariable}
-                    style={{
-                      position: "relative",
-                      width: panelWidth,
-                      height: panelHeight,
-                    }}
-                  >
-                    <AlignedSeriesPanel
-                      nwbUrl={nwbUrl}
-                      intervalsPath={intervalsPath}
-                      client={client}
-                      alignToVariable={alignToVariable}
-                      channel={ch}
-                      windowRange={committed.windowRange}
-                      maxIntervals={committed.maxIntervals}
-                      width={panelWidth}
-                      height={panelHeight}
-                      rawTraceAlpha={rawTraceAlpha}
-                      showStdBand={showStdBand}
-                      stdMultiple={stdMultiple}
-                      groupByValues={groupByValues}
-                      groups={groups}
-                      yAxisLabel={`ch ${ch}`}
-                    />
-                  </div>
+                    nwbUrl={nwbUrl}
+                    intervalsPath={intervalsPath}
+                    client={client}
+                    alignToVariable={alignToVariable}
+                    channel={ch}
+                    windowRange={committed.windowRange}
+                    maxIntervals={committed.maxIntervals}
+                    cellWidth={cellWidth}
+                    cellHeight={panelHeight}
+                    gap={gap}
+                    rawTraceAlpha={rawTraceAlpha}
+                    showStdBand={showStdBand}
+                    stdMultiple={stdMultiple}
+                    groupByValues={groupByValues}
+                    groups={groups}
+                    split={split}
+                    yAxisLabel={`ch ${ch}`}
+                  />
                 ))}
               </div>
             </div>
@@ -613,7 +641,13 @@ const ChannelSelection: FunctionComponent<ChannelSelectionProps> = ({
   );
 };
 
-type PanelProps = {
+type WidgetTrial = {
+  times: number[];
+  roiValues: number[];
+  group: string | number;
+};
+
+type AlignBlockProps = {
   nwbUrl: string;
   intervalsPath: string;
   client: TimeseriesClient;
@@ -621,17 +655,21 @@ type PanelProps = {
   channel: number;
   windowRange: { start: number; end: number };
   maxIntervals: number;
-  width: number;
-  height: number;
+  cellWidth: number;
+  cellHeight: number;
+  gap: number;
   rawTraceAlpha: number;
   showStdBand: boolean;
   stdMultiple: number;
   groupByValues: string[] | undefined;
   groups: Group[] | undefined;
+  split: boolean;
   yAxisLabel: string;
 };
 
-const AlignedSeriesPanel: FunctionComponent<PanelProps> = ({
+// Loads the snippets for one (channel, align-to) pair once, then renders either
+// a single overlaid plot or one plot per group (split, side by side).
+const AlignBlock: FunctionComponent<AlignBlockProps> = ({
   nwbUrl,
   intervalsPath,
   client,
@@ -639,13 +677,15 @@ const AlignedSeriesPanel: FunctionComponent<PanelProps> = ({
   channel,
   windowRange,
   maxIntervals,
-  width,
-  height,
+  cellWidth,
+  cellHeight,
+  gap,
   rawTraceAlpha,
   showStdBand,
   stdMultiple,
   groupByValues,
   groups,
+  split,
   yAxisLabel,
 }) => {
   const [rawTrials, setRawTrials] = useState<AlignedTrial[] | null>(null);
@@ -714,7 +754,7 @@ const AlignedSeriesPanel: FunctionComponent<PanelProps> = ({
   const grouping = !!groups && !!groupByValues;
 
   // Assign a group to each trial by its row index (live; no snippet reload).
-  const widgetTrials = useMemo(() => {
+  const allTrials: WidgetTrial[] | null = useMemo(() => {
     if (!rawTrials) return null;
     return rawTrials.map((tr) => ({
       times: tr.times,
@@ -723,16 +763,112 @@ const AlignedSeriesPanel: FunctionComponent<PanelProps> = ({
     }));
   }, [rawTrials, grouping, groupByValues]);
 
-  const widgetGroups = useMemo(
-    () => (grouping ? groups! : [{ group: 0, color: seriesColor }]),
-    [grouping, groups],
+  const countLabel =
+    numAlignTimes !== null
+      ? ` (${Math.min(numAlignTimes, maxIntervals)}${numAlignTimes > maxIntervals ? ` of ${numAlignTimes}` : ""} intervals)`
+      : "";
+
+  const statusBox = (color: string, text: string) => (
+    <div
+      style={{
+        flex: "0 0 auto",
+        width: cellWidth,
+        height: cellHeight,
+        padding: 12,
+        color,
+        boxSizing: "border-box",
+      }}
+    >
+      {text}
+    </div>
   );
 
-  const titleHeight = 22;
-  const widgetHeight = height - titleHeight;
+  if (error) return statusBox("#e74c3c", `Error: ${error}`);
+  if (!allTrials)
+    return statusBox(
+      "#555",
+      `Loading snippets... ${progress.loaded}${progress.total ? ` / ${progress.total}` : ""}`,
+    );
+  if (allTrials.length === 0)
+    return statusBox("#555", "No intervals to display.");
+
+  const cells =
+    split && grouping
+      ? groups!.map((g) => ({
+          key: g.group,
+          title: `${alignToVariable} · ${g.group} (${allTrials.filter((t) => t.group === g.group).length})`,
+          trials: allTrials.filter((t) => t.group === g.group),
+          widgetGroups: [g],
+          perGroupStats: false,
+        }))
+      : [
+          {
+            key: "_all",
+            title: alignToVariable + countLabel,
+            trials: allTrials,
+            widgetGroups: grouping
+              ? groups!
+              : [{ group: 0, color: seriesColor }],
+            perGroupStats: grouping,
+          },
+        ];
 
   return (
-    <div style={{ position: "absolute", width, height }}>
+    <div style={{ display: "flex", gap, flex: "0 0 auto" }}>
+      {cells.map((cell) => (
+        <TrialPlot
+          key={cell.key}
+          width={cellWidth}
+          height={cellHeight}
+          title={cell.title}
+          trials={cell.trials}
+          groups={cell.widgetGroups}
+          perGroupStats={cell.perGroupStats}
+          windowRange={windowRange}
+          alignToVariable={alignToVariable}
+          rawTraceAlpha={rawTraceAlpha}
+          showStdBand={showStdBand}
+          stdMultiple={stdMultiple}
+          yAxisLabel={yAxisLabel}
+        />
+      ))}
+    </div>
+  );
+};
+
+type TrialPlotProps = {
+  width: number;
+  height: number;
+  title: string;
+  trials: WidgetTrial[];
+  groups: Group[] | { group: number; color: string }[];
+  perGroupStats: boolean;
+  windowRange: { start: number; end: number };
+  alignToVariable: string;
+  rawTraceAlpha: number;
+  showStdBand: boolean;
+  stdMultiple: number;
+  yAxisLabel: string;
+};
+
+const TrialPlot: FunctionComponent<TrialPlotProps> = ({
+  width,
+  height,
+  title,
+  trials,
+  groups,
+  perGroupStats,
+  windowRange,
+  alignToVariable,
+  rawTraceAlpha,
+  showStdBand,
+  stdMultiple,
+  yAxisLabel,
+}) => {
+  const titleHeight = 22;
+  const widgetHeight = height - titleHeight;
+  return (
+    <div style={{ position: "relative", width, height, flex: "0 0 auto" }}>
       <div
         style={{
           position: "absolute",
@@ -741,17 +877,13 @@ const AlignedSeriesPanel: FunctionComponent<PanelProps> = ({
           fontWeight: "bold",
           textAlign: "center",
           fontSize: 13,
+          overflow: "hidden",
+          whiteSpace: "nowrap",
+          textOverflow: "ellipsis",
         }}
+        title={title}
       >
-        {alignToVariable}
-        {numAlignTimes !== null && (
-          <span style={{ fontWeight: "normal", color: "#666" }}>
-            {" "}
-            ({Math.min(numAlignTimes, maxIntervals)}
-            {numAlignTimes > maxIntervals ? ` of ${numAlignTimes}` : ""}{" "}
-            intervals)
-          </span>
-        )}
+        {title}
       </div>
       <div
         style={{
@@ -761,23 +893,14 @@ const AlignedSeriesPanel: FunctionComponent<PanelProps> = ({
           height: widgetHeight,
         }}
       >
-        {error ? (
-          <div style={{ padding: 12, color: "#e74c3c" }}>Error: {error}</div>
-        ) : !widgetTrials ? (
-          <div style={{ padding: 12, color: "#555" }}>
-            Loading snippets... {progress.loaded}
-            {progress.total ? ` / ${progress.total}` : ""}
-          </div>
-        ) : widgetTrials.length === 0 ? (
-          <div style={{ padding: 12, color: "#555" }}>
-            No intervals to display.
-          </div>
+        {trials.length === 0 ? (
+          <div style={{ padding: 12, color: "#555" }}>No intervals.</div>
         ) : (
           <TrialAlignedSeriesWidget
             width={width}
             height={widgetHeight}
-            trials={widgetTrials}
-            groups={widgetGroups}
+            trials={trials}
+            groups={groups}
             windowRange={windowRange}
             alignmentVariableName={alignToVariable}
             showRawTraces={rawTraceAlpha > 0}
@@ -785,7 +908,7 @@ const AlignedSeriesPanel: FunctionComponent<PanelProps> = ({
             showStdBand={showStdBand}
             stdMultiple={stdMultiple}
             yAxisLabel={yAxisLabel}
-            perGroupStats={grouping}
+            perGroupStats={perGroupStats}
           />
         )}
       </div>
