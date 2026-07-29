@@ -1,6 +1,8 @@
 export type SpectrogramInput = {
-  // The signal for a single channel, already in physical units.
-  signal: number[];
+  // One signal per selected channel, already in physical units and all the
+  // same length. When more than one is given, the power is averaged across
+  // them (mean power spectrogram).
+  signals: number[][];
   samplingFrequency: number;
   // Time (in seconds) corresponding to signal[0].
   signalStartTimeSec: number;

@@ -10,9 +10,12 @@ import {
 import "../common/loadingState.css";
 import { ControlButton } from "../common/components/ControlButton";
 import TimeseriesClient from "../simple-timeseries/TimeseriesClient";
+import ChannelSelector from "./ChannelSelector";
 import { ColormapName, colormapNames } from "./colormap";
 import { plotMargins } from "./plotConstants";
-import SpectrogramDataClient from "./SpectrogramDataClient";
+import SpectrogramDataClient, {
+  MAX_AVG_CHANNELS,
+} from "./SpectrogramDataClient";
 import SpectrogramWidget from "./SpectrogramWidget";
 import { SpectrogramResult } from "./WorkerTypes";
 
@@ -103,7 +106,7 @@ const LfpSpectrogramInner: FunctionComponent<InnerProps> = ({
   const totalDuration = dataEnd - dataStart;
   const numChannels = client.numChannels;
 
-  const [channel, setChannel] = useState(0);
+  const [selectedChannels, setSelectedChannels] = useState<number[]>([0]);
   const [windowSize, setWindowSize] = useState(512);
   const [colormap, setColormap] = useState<ColormapName>("viridis");
   const [freqMaxHz, setFreqMaxHz] = useState(Math.min(nyquist, 150));
@@ -131,17 +134,30 @@ const LfpSpectrogramInner: FunctionComponent<InnerProps> = ({
     };
   }, []);
 
+  // Stable key so the client is only recreated when the actual selection
+  // changes (not on every render that produces a new array identity).
+  const channelsKey = selectedChannels.join(",");
+
   // Recreate the caching client when the worker or spectrogram params change.
   const dataClient = useMemo(() => {
     if (!worker) return null;
-    return new SpectrogramDataClient(client, worker, { channel, windowSize });
-  }, [client, worker, channel, windowSize]);
+    return new SpectrogramDataClient(client, worker, {
+      channels: selectedChannels,
+      windowSize,
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [client, worker, channelsKey, windowSize]);
 
   // Fetch/compute the block for the current visible range (debounced), keeping
   // the previous block on screen until the new one is ready.
   const reqRef = useRef(0);
   useEffect(() => {
     if (!dataClient) return;
+    if (selectedChannels.length === 0) {
+      setResult(null);
+      setLoading(false);
+      return;
+    }
     const handle = setTimeout(() => {
       const reqId = ++reqRef.current;
       setLoading(true);
@@ -160,16 +176,27 @@ const LfpSpectrogramInner: FunctionComponent<InnerProps> = ({
         });
     }, 40);
     return () => clearTimeout(handle);
-  }, [dataClient, visRange]);
+  }, [dataClient, visRange, selectedChannels.length]);
 
   const plotHeight = Math.max(200, height - (condensed ? 70 : 96));
   const plotW = width - plotMargins.left - plotMargins.right;
 
-  // Widest allowed window: keeps a block's sample load under MAX_BLOCK_SAMPLES
-  // (a block spans up to ~8x the visible window).
+  // Number of channels actually averaged (bounded).
+  const numAvgChannels = Math.min(
+    Math.max(selectedChannels.length, 1),
+    MAX_AVG_CHANNELS,
+  );
+
+  // Widest allowed window: keeps a block's total sample load (across the
+  // averaged channels) under MAX_BLOCK_SAMPLES. A block spans up to ~8x the
+  // visible window.
   const maxSpan = useMemo(
-    () => Math.min(totalDuration, MAX_BLOCK_SAMPLES / (8 * samplingFrequency)),
-    [totalDuration, samplingFrequency],
+    () =>
+      Math.min(
+        totalDuration,
+        MAX_BLOCK_SAMPLES / (8 * samplingFrequency * numAvgChannels),
+      ),
+    [totalDuration, samplingFrequency, numAvgChannels],
   );
 
   // Narrowest allowed window (a handful of FFT windows).
@@ -289,6 +316,15 @@ const LfpSpectrogramInner: FunctionComponent<InnerProps> = ({
   );
 
   const visSpan = visRange[1] - visRange[0];
+  const numSel = selectedChannels.length;
+  const channelsNote =
+    numSel === 0
+      ? "no channels selected"
+      : numSel === 1
+        ? "1 channel"
+        : numSel > MAX_AVG_CHANNELS
+          ? `avg of ${MAX_AVG_CHANNELS} of ${numSel} channels`
+          : `avg of ${numSel} channels`;
   const eps = 1e-6;
   const canZoomIn = visSpan > minSpan + eps;
   const canZoomOut = visSpan < maxSpan - eps;
@@ -308,21 +344,11 @@ const LfpSpectrogramInner: FunctionComponent<InnerProps> = ({
         }}
       >
         {labeledField(
-          `Channel (0-${numChannels - 1})`,
-          <input
-            type="number"
-            min={0}
-            max={numChannels - 1}
-            value={channel}
-            onChange={(e) =>
-              setChannel(
-                Math.max(
-                  0,
-                  Math.min(numChannels - 1, parseInt(e.target.value) || 0),
-                ),
-              )
-            }
-            style={{ width: 70 }}
+          "Channels",
+          <ChannelSelector
+            numChannels={numChannels}
+            selected={selectedChannels}
+            setSelected={setSelectedChannels}
           />,
         )}
 
@@ -423,8 +449,9 @@ const LfpSpectrogramInner: FunctionComponent<InnerProps> = ({
           →
         </ControlButton>
         <span style={{ fontSize: 12, color: "#555", marginLeft: 8 }}>
-          {samplingFrequency.toFixed(1)} Hz · window {visSpan.toFixed(2)} s ·
-          drag/scroll also works{loading ? " · updating…" : ""}
+          {channelsNote} · {samplingFrequency.toFixed(1)} Hz · window{" "}
+          {visSpan.toFixed(2)} s · drag/scroll also works
+          {loading ? " · updating…" : ""}
           {error ? <span style={{ color: "#e74c3c" }}> · {error}</span> : null}
         </span>
       </div>

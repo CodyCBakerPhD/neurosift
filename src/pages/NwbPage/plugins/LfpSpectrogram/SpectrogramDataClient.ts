@@ -9,7 +9,22 @@ const TARGET_COLUMNS_PER_BLOCK = 3000;
 // Number of computed blocks to keep in memory (LRU).
 const MAX_CACHED_BLOCKS = 8;
 
+// Cap on how many channels are actually loaded and averaged, to bound compute
+// and memory. If more are selected, an evenly-spaced subset is used.
+export const MAX_AVG_CHANNELS = 16;
+
 type BlockKey = string;
+
+// Sorted, de-duplicated selection, evenly subsampled down to `max` channels.
+export const limitChannels = (channels: number[], max: number): number[] => {
+  const uniqueSorted = Array.from(new Set(channels)).sort((a, b) => a - b);
+  if (uniqueSorted.length <= max) return uniqueSorted;
+  const out: number[] = [];
+  for (let i = 0; i < max; i++) {
+    out.push(uniqueSorted[Math.floor((i * uniqueSorted.length) / max)]);
+  }
+  return Array.from(new Set(out));
+};
 
 // Snap a visible range to a cached block: a power-of-two-sized span, aligned to
 // a half-block grid, that is guaranteed to fully contain the view while staying
@@ -45,7 +60,7 @@ export class SpectrogramDataClient {
   constructor(
     private client: TimeseriesClient,
     private worker: Worker,
-    private params: { channel: number; windowSize: number },
+    private params: { channels: number[]; windowSize: number },
   ) {}
 
   get startTime() {
@@ -56,8 +71,9 @@ export class SpectrogramDataClient {
   }
 
   private keyFor(blockT1: number, blockT2: number): BlockKey {
-    const { channel, windowSize } = this.params;
-    return `${channel}|${windowSize}|${blockT1.toFixed(4)}|${blockT2.toFixed(4)}`;
+    const { channels, windowSize } = this.params;
+    const chans = limitChannels(channels, MAX_AVG_CHANNELS).join(",");
+    return `${chans}|${windowSize}|${blockT1.toFixed(4)}|${blockT2.toFixed(4)}`;
   }
 
   // Return the spectrogram block covering the given visible range, computing and
@@ -82,19 +98,25 @@ export class SpectrogramDataClient {
     }
 
     const fs = this.client.samplingFrequency;
-    const { channel, windowSize } = this.params;
+    const { channels, windowSize } = this.params;
 
-    const { data } = await this.client.getDataForTimeRange(
-      blockT1,
-      blockT2,
-      channel,
-      channel + 1,
+    // Load each selected channel (capped) and average their power spectra.
+    const useChannels = limitChannels(channels, MAX_AVG_CHANNELS);
+    const signals = await Promise.all(
+      useChannels.map(async (ch) => {
+        const { data } = await this.client.getDataForTimeRange(
+          blockT1,
+          blockT2,
+          ch,
+          ch + 1,
+        );
+        return data[0] || [];
+      }),
     );
-    const signal = data[0] || [];
 
     // Choose the hop so the block yields ~TARGET_COLUMNS_PER_BLOCK columns, but
     // never finer than a fraction of the window (avoids needless overlap).
-    const blockSamples = signal.length;
+    const blockSamples = signals[0]?.length ?? 0;
     let hopSize = Math.max(
       1,
       Math.round(blockSamples / TARGET_COLUMNS_PER_BLOCK),
@@ -102,7 +124,7 @@ export class SpectrogramDataClient {
     hopSize = Math.max(hopSize, Math.floor(windowSize / 8));
 
     const input: SpectrogramInput = {
-      signal,
+      signals,
       samplingFrequency: fs,
       signalStartTimeSec: blockT1,
       windowSize,
