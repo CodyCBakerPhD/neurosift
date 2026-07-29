@@ -465,7 +465,7 @@ const TimeAlignedSeriesInner: FunctionComponent<InnerProps> = ({
               </label>
               {stdPending && (
                 <div style={{ color: "#e67e22", marginTop: 3 }}>
-                  applies ~5s after you stop editing&hellip;
+                  Re-computing...
                 </div>
               )}
             </div>
