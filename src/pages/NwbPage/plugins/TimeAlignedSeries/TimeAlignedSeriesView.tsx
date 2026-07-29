@@ -232,6 +232,15 @@ const TimeAlignedSeriesInner: FunctionComponent<InnerProps> = ({
     const v = parseFloat(stdMultipleStr);
     return isNaN(v) || v < 0 ? 1 : v;
   }, [stdMultipleStr]);
+  // Redrawing the std lines across every panel is expensive, so debounce: apply
+  // the new multiple only ~5s after the user stops changing it.
+  const [effectiveStdMultiple, setEffectiveStdMultiple] = useState(1);
+  useEffect(() => {
+    if (effectiveStdMultiple === stdMultiple) return;
+    const t = setTimeout(() => setEffectiveStdMultiple(stdMultiple), 5000);
+    return () => clearTimeout(t);
+  }, [stdMultiple, effectiveStdMultiple]);
+  const stdPending = showStdBand && effectiveStdMultiple !== stdMultiple;
   // How to show groups: overlaid on one plot, or split into side-by-side plots.
   const [groupDisplay, setGroupDisplay] = useState<"overlay" | "split">(
     "overlay",
@@ -454,6 +463,11 @@ const TimeAlignedSeriesInner: FunctionComponent<InnerProps> = ({
                   style={{ width: 60 }}
                 />
               </label>
+              {stdPending && (
+                <div style={{ color: "#e67e22", marginTop: 3 }}>
+                  applies ~5s after you stop editing&hellip;
+                </div>
+              )}
             </div>
             {groupByVariable !== "" && (
               <>
@@ -562,7 +576,7 @@ const TimeAlignedSeriesInner: FunctionComponent<InnerProps> = ({
                     gap={gap}
                     rawTraceAlpha={rawTraceAlpha}
                     showStdBand={showStdBand}
-                    stdMultiple={stdMultiple}
+                    stdMultiple={effectiveStdMultiple}
                     groupByValues={groupByValues}
                     groups={groups}
                     split={split}
@@ -768,6 +782,42 @@ const AlignBlock: FunctionComponent<AlignBlockProps> = ({
       ? ` (${Math.min(numAlignTimes, maxIntervals)}${numAlignTimes > maxIntervals ? ` of ${numAlignTimes}` : ""} intervals)`
       : "";
 
+  // Memoize the per-cell trial arrays so their references stay stable across
+  // re-renders (e.g. while the user edits an unrelated live control). Without
+  // this, new trials/groups arrays each render would invalidate the widget's
+  // interpolation memos and re-run the expensive mean/std computation.
+  const cells = useMemo(() => {
+    if (!allTrials) return null;
+    if (split && grouping) {
+      return groups!.map((g) => {
+        const trials = allTrials.filter((t) => t.group === g.group);
+        return {
+          key: String(g.group),
+          title: `${alignToVariable} · ${g.group} (${trials.length})`,
+          trials,
+          widgetGroups: [g] as Group[],
+          // Draw the mean/band in the group's color so a group looks the same
+          // in split as in overlay.
+          perGroupStats: true,
+        };
+      });
+    }
+    return [
+      {
+        key: "_all",
+        title: alignToVariable + countLabel,
+        trials: allTrials,
+        widgetGroups: (grouping
+          ? groups!
+          : [{ group: 0, color: seriesColor }]) as (
+          | Group
+          | { group: number; color: string }
+        )[],
+        perGroupStats: grouping,
+      },
+    ];
+  }, [allTrials, split, grouping, groups, alignToVariable, countLabel]);
+
   const statusBox = (color: string, text: string) => (
     <div
       style={{
@@ -784,34 +834,13 @@ const AlignBlock: FunctionComponent<AlignBlockProps> = ({
   );
 
   if (error) return statusBox("#e74c3c", `Error: ${error}`);
-  if (!allTrials)
+  if (!allTrials || !cells)
     return statusBox(
       "#555",
       `Loading snippets... ${progress.loaded}${progress.total ? ` / ${progress.total}` : ""}`,
     );
   if (allTrials.length === 0)
     return statusBox("#555", "No intervals to display.");
-
-  const cells =
-    split && grouping
-      ? groups!.map((g) => ({
-          key: g.group,
-          title: `${alignToVariable} · ${g.group} (${allTrials.filter((t) => t.group === g.group).length})`,
-          trials: allTrials.filter((t) => t.group === g.group),
-          widgetGroups: [g],
-          perGroupStats: false,
-        }))
-      : [
-          {
-            key: "_all",
-            title: alignToVariable + countLabel,
-            trials: allTrials,
-            widgetGroups: grouping
-              ? groups!
-              : [{ group: 0, color: seriesColor }],
-            perGroupStats: grouping,
-          },
-        ];
 
   return (
     <div style={{ display: "flex", gap, flex: "0 0 auto" }}>
@@ -841,7 +870,7 @@ type TrialPlotProps = {
   height: number;
   title: string;
   trials: WidgetTrial[];
-  groups: Group[] | { group: number; color: string }[];
+  groups: (Group | { group: number; color: string })[];
   perGroupStats: boolean;
   windowRange: { start: number; end: number };
   alignToVariable: string;
