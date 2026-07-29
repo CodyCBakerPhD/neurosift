@@ -14,7 +14,12 @@ export const computeSpectrogram = (
     throw new Error("windowSize must be a power of two >= 2");
   }
 
-  const step = Math.max(1, Math.floor(windowSize * (1 - overlap)));
+  // Prefer an explicit hop (used by the interactive view to match the zoom
+  // level); otherwise derive it from the requested overlap fraction.
+  const step =
+    input.hopSize && input.hopSize > 0
+      ? Math.max(1, Math.floor(input.hopSize))
+      : Math.max(1, Math.floor(windowSize * (1 - overlap)));
   const numFreqs = windowSize / 2 + 1;
 
   // Precompute a Hann window and its power (for PSD normalization).

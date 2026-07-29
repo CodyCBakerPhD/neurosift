@@ -6,8 +6,13 @@ export type SpectrogramInput = {
   signalStartTimeSec: number;
   // FFT window length in number of samples (should be a power of two).
   windowSize: number;
-  // Fraction of overlap between consecutive windows in [0, 1).
+  // Fraction of overlap between consecutive windows in [0, 1). Used to derive
+  // the hop size when hopSize is not given explicitly.
   overlap: number;
+  // Explicit hop (step) between consecutive windows, in samples. When provided
+  // it takes precedence over `overlap` — this is what the interactive view uses
+  // to match the number of columns to the current zoom level.
+  hopSize?: number;
 };
 
 export type SpectrogramResult = {

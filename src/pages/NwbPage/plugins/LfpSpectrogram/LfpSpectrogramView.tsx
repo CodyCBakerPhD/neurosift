@@ -10,8 +10,10 @@ import {
 import "../common/loadingState.css";
 import TimeseriesClient from "../simple-timeseries/TimeseriesClient";
 import { ColormapName, colormapNames } from "./colormap";
+import { plotMargins } from "./plotConstants";
+import SpectrogramDataClient from "./SpectrogramDataClient";
 import SpectrogramWidget from "./SpectrogramWidget";
-import { SpectrogramInput, SpectrogramResult } from "./WorkerTypes";
+import { SpectrogramResult } from "./WorkerTypes";
 
 type Props = {
   nwbUrl: string;
@@ -21,11 +23,11 @@ type Props = {
   condensed?: boolean;
 };
 
-// Cap the number of samples pulled into the browser for a single computation.
-const MAX_SAMPLES = 2_000_000;
-
 const windowSizeOptions = [128, 256, 512, 1024, 2048, 4096];
-const overlapOptions = [0, 0.25, 0.5, 0.75];
+
+// Upper bound on samples pulled into the browser for one cached block. A block
+// spans up to ~8x the visible window, so this also bounds the widest zoom-out.
+const MAX_BLOCK_SAMPLES = 4_000_000;
 
 const LfpSpectrogramView: FunctionComponent<Props> = ({
   nwbUrl,
@@ -72,8 +74,6 @@ const LfpSpectrogramView: FunctionComponent<Props> = ({
 
   return (
     <LfpSpectrogramInner
-      nwbUrl={nwbUrl}
-      path={path}
       client={client}
       width={width}
       height={height}
@@ -83,8 +83,6 @@ const LfpSpectrogramView: FunctionComponent<Props> = ({
 };
 
 type InnerProps = {
-  nwbUrl: string;
-  path: string;
   client: TimeseriesClient;
   width: number;
   height: number;
@@ -92,7 +90,6 @@ type InnerProps = {
 };
 
 const LfpSpectrogramInner: FunctionComponent<InnerProps> = ({
-  path,
   client,
   width,
   height,
@@ -100,121 +97,170 @@ const LfpSpectrogramInner: FunctionComponent<InnerProps> = ({
 }) => {
   const samplingFrequency = client.samplingFrequency;
   const nyquist = samplingFrequency / 2;
-  const totalDuration = client.duration;
+  const dataStart = client.startTime;
+  const dataEnd = client.endTime;
+  const totalDuration = dataEnd - dataStart;
   const numChannels = client.numChannels;
 
   const [channel, setChannel] = useState(0);
-  const [startTimeSec, setStartTimeSec] = useState(client.startTime);
-  const [durationSec, setDurationSec] = useState(
-    Math.min(60, totalDuration || 60),
-  );
   const [windowSize, setWindowSize] = useState(512);
-  const [overlap, setOverlap] = useState(0.5);
   const [colormap, setColormap] = useState<ColormapName>("viridis");
   const [freqMaxHz, setFreqMaxHz] = useState(Math.min(nyquist, 150));
 
+  // Visible time window (seconds).
+  const [visRange, setVisRange] = useState<[number, number]>(() => [
+    dataStart,
+    dataStart + Math.min(30, totalDuration || 30),
+  ]);
+
   const [result, setResult] = useState<SpectrogramResult | null>(null);
-  const [computing, setComputing] = useState(false);
-  const [computeError, setComputeError] = useState<string | null>(null);
-  const [statusMessage, setStatusMessage] = useState<string>("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  const workerRef = useRef<Worker | null>(null);
-  const requestIdRef = useRef(0);
-
+  // A single long-lived compute worker; the data client wraps it with a cache.
+  const [worker, setWorker] = useState<Worker | null>(null);
   useEffect(() => {
-    const worker = new Worker(new URL("./worker", import.meta.url), {
+    const w = new Worker(new URL("./worker", import.meta.url), {
       type: "module",
     });
-    workerRef.current = worker;
+    setWorker(w);
     return () => {
-      worker.terminate();
-      workerRef.current = null;
+      w.terminate();
+      setWorker(null);
     };
   }, []);
 
-  const estimatedSamples = useMemo(
-    () => Math.round(durationSec * samplingFrequency),
-    [durationSec, samplingFrequency],
+  // Recreate the caching client when the worker or spectrogram params change.
+  const dataClient = useMemo(() => {
+    if (!worker) return null;
+    return new SpectrogramDataClient(client, worker, { channel, windowSize });
+  }, [client, worker, channel, windowSize]);
+
+  // Fetch/compute the block for the current visible range (debounced), keeping
+  // the previous block on screen until the new one is ready.
+  const reqRef = useRef(0);
+  useEffect(() => {
+    if (!dataClient) return;
+    const handle = setTimeout(() => {
+      const reqId = ++reqRef.current;
+      setLoading(true);
+      dataClient
+        .getSpectrogram(visRange[0], visRange[1])
+        .then((r) => {
+          if (reqId !== reqRef.current) return;
+          setResult(r);
+          setError(null);
+          setLoading(false);
+        })
+        .catch((err) => {
+          if (reqId !== reqRef.current) return;
+          setError(err instanceof Error ? err.message : String(err));
+          setLoading(false);
+        });
+    }, 40);
+    return () => clearTimeout(handle);
+  }, [dataClient, visRange]);
+
+  const plotHeight = Math.max(200, height - (condensed ? 70 : 96));
+  const plotW = width - plotMargins.left - plotMargins.right;
+
+  // Widest allowed window: keeps a block's sample load under MAX_BLOCK_SAMPLES
+  // (a block spans up to ~8x the visible window).
+  const maxSpan = useMemo(
+    () => Math.min(totalDuration, MAX_BLOCK_SAMPLES / (8 * samplingFrequency)),
+    [totalDuration, samplingFrequency],
   );
-  const tooManySamples = estimatedSamples > MAX_SAMPLES;
 
-  const handleCompute = useCallback(async () => {
-    const worker = workerRef.current;
-    if (!worker) return;
-    if (tooManySamples) {
-      setComputeError(
-        `The selected window has ~${estimatedSamples.toLocaleString()} samples, ` +
-          `which exceeds the limit of ${MAX_SAMPLES.toLocaleString()}. ` +
-          `Reduce the duration.`,
-      );
-      return;
-    }
-    setComputing(true);
-    setComputeError(null);
-    setResult(null);
-    setStatusMessage("Loading LFP data...");
-    try {
-      const tStart = Math.max(client.startTime, startTimeSec);
-      const tEnd = Math.min(client.endTime, startTimeSec + durationSec);
-      const { data } = await client.getDataForTimeRange(
-        tStart,
-        tEnd,
-        channel,
-        channel + 1,
-      );
-      const signal = data[0] || [];
-      if (signal.length < windowSize) {
-        throw new Error(
-          `Loaded ${signal.length} samples, but the FFT window is ${windowSize}. ` +
-            `Increase the duration or decrease the window size.`,
-        );
+  const clampRange = useCallback(
+    (start: number, end: number): [number, number] => {
+      const minSpan = Math.max((windowSize * 4) / samplingFrequency, 1e-3);
+      const span = Math.min(Math.max(end - start, minSpan), maxSpan || minSpan);
+      let s = start;
+      let e = s + span;
+      if (e > dataEnd) {
+        e = dataEnd;
+        s = e - span;
       }
-      setStatusMessage("Computing spectrogram...");
-      const input: SpectrogramInput = {
-        signal,
-        samplingFrequency,
-        signalStartTimeSec: tStart,
-        windowSize,
-        overlap,
-      };
-      const requestId = ++requestIdRef.current;
-      const spectrogram = await new Promise<SpectrogramResult>(
-        (resolve, reject) => {
-          const onMessage = (evt: MessageEvent) => {
-            if (evt.data.requestId !== requestId) return;
-            worker.removeEventListener("message", onMessage);
-            if (evt.data.error) reject(new Error(evt.data.error));
-            else resolve(evt.data.result);
-          };
-          worker.addEventListener("message", onMessage);
-          worker.postMessage({ requestId, input });
-        },
-      );
-      setResult(spectrogram);
-      setStatusMessage("");
-    } catch (err) {
-      setComputeError(err instanceof Error ? err.message : String(err));
-      setStatusMessage("");
-    } finally {
-      setComputing(false);
-    }
-  }, [
-    client,
-    channel,
-    startTimeSec,
-    durationSec,
-    windowSize,
-    overlap,
-    samplingFrequency,
-    tooManySamples,
-    estimatedSamples,
-  ]);
+      if (s < dataStart) {
+        s = dataStart;
+        e = Math.min(s + span, dataEnd);
+      }
+      return [s, e];
+    },
+    [dataStart, dataEnd, maxSpan, windowSize, samplingFrequency],
+  );
 
-  const freqResolution = samplingFrequency / windowSize;
-  const timeResolution = (windowSize * (1 - overlap)) / samplingFrequency;
+  // --- pan / zoom interaction ---
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const dragRef = useRef<{ x: number; range: [number, number] } | null>(null);
 
-  const controlsHeight = condensed ? 150 : 176;
-  const plotHeight = Math.max(200, height - controlsHeight);
+  // Prevent the page from scrolling while the wheel is used to zoom.
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const prevent = (e: WheelEvent) => e.preventDefault();
+    el.addEventListener("wheel", prevent, { passive: false });
+    return () => el.removeEventListener("wheel", prevent);
+  }, []);
+
+  const timeAtClientX = useCallback(
+    (clientX: number, range: [number, number]) => {
+      const rect = containerRef.current?.getBoundingClientRect();
+      if (!rect) return range[0];
+      const x = clientX - rect.left;
+      const frac = Math.min(Math.max((x - plotMargins.left) / plotW, 0), 1);
+      return range[0] + frac * (range[1] - range[0]);
+    },
+    [plotW],
+  );
+
+  const handleMouseDown = useCallback(
+    (e: React.MouseEvent) => {
+      dragRef.current = { x: e.clientX, range: visRange };
+    },
+    [visRange],
+  );
+
+  const handleMouseMove = useCallback(
+    (e: React.MouseEvent) => {
+      const drag = dragRef.current;
+      if (!drag) return;
+      const dx = e.clientX - drag.x;
+      const span = drag.range[1] - drag.range[0];
+      const dt = (dx / plotW) * span;
+      setVisRange(clampRange(drag.range[0] - dt, drag.range[1] - dt));
+    },
+    [plotW, clampRange],
+  );
+
+  const endDrag = useCallback(() => {
+    dragRef.current = null;
+  }, []);
+
+  const handleWheel = useCallback(
+    (e: React.WheelEvent) => {
+      if (e.deltaY === 0) return;
+      const factor = e.deltaY > 0 ? 1.15 : 1 / 1.15;
+      setVisRange((prev) => {
+        const tc = timeAtClientX(e.clientX, prev);
+        const span = prev[1] - prev[0];
+        const newSpan = span * factor;
+        const frac = span > 0 ? (tc - prev[0]) / span : 0.5;
+        const newStart = tc - frac * newSpan;
+        return clampRange(newStart, newStart + newSpan);
+      });
+    },
+    [timeAtClientX, clampRange],
+  );
+
+  const labeledField = (label: string, node: React.ReactNode) => (
+    <label style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+      <span style={{ color: "#555", fontSize: 11 }}>{label}</span>
+      {node}
+    </label>
+  );
+
+  const visSpan = visRange[1] - visRange[0];
 
   return (
     <div style={{ width }}>
@@ -222,13 +268,14 @@ const LfpSpectrogramInner: FunctionComponent<InnerProps> = ({
         style={{
           display: "flex",
           flexWrap: "wrap",
-          gap: "12px 20px",
-          padding: "8px 4px",
+          gap: "10px 18px",
+          padding: "6px 4px",
           fontSize: 13,
           alignItems: "flex-end",
         }}
       >
-        <LabeledField label={`Channel (0-${numChannels - 1})`}>
+        {labeledField(
+          `Channel (0-${numChannels - 1})`,
           <input
             type="number"
             min={0}
@@ -243,33 +290,11 @@ const LfpSpectrogramInner: FunctionComponent<InnerProps> = ({
               )
             }
             style={{ width: 70 }}
-          />
-        </LabeledField>
+          />,
+        )}
 
-        <LabeledField label="Start (s)">
-          <input
-            type="number"
-            step="0.1"
-            value={startTimeSec}
-            onChange={(e) => setStartTimeSec(parseFloat(e.target.value) || 0)}
-            style={{ width: 90 }}
-          />
-        </LabeledField>
-
-        <LabeledField label="Duration (s)">
-          <input
-            type="number"
-            step="1"
-            min={0}
-            value={durationSec}
-            onChange={(e) =>
-              setDurationSec(Math.max(0, parseFloat(e.target.value) || 0))
-            }
-            style={{ width: 90 }}
-          />
-        </LabeledField>
-
-        <LabeledField label="FFT window (samples)">
+        {labeledField(
+          "FFT window (samples)",
           <select
             value={windowSize}
             onChange={(e) => setWindowSize(parseInt(e.target.value))}
@@ -279,23 +304,11 @@ const LfpSpectrogramInner: FunctionComponent<InnerProps> = ({
                 {w}
               </option>
             ))}
-          </select>
-        </LabeledField>
+          </select>,
+        )}
 
-        <LabeledField label="Overlap">
-          <select
-            value={overlap}
-            onChange={(e) => setOverlap(parseFloat(e.target.value))}
-          >
-            {overlapOptions.map((o) => (
-              <option key={o} value={o}>
-                {Math.round(o * 100)}%
-              </option>
-            ))}
-          </select>
-        </LabeledField>
-
-        <LabeledField label={`Max freq (Hz, ≤${nyquist.toFixed(0)})`}>
+        {labeledField(
+          `Max freq (Hz, ≤${nyquist.toFixed(0)})`,
           <input
             type="number"
             min={1}
@@ -307,10 +320,11 @@ const LfpSpectrogramInner: FunctionComponent<InnerProps> = ({
               )
             }
             style={{ width: 80 }}
-          />
-        </LabeledField>
+          />,
+        )}
 
-        <LabeledField label="Colormap">
+        {labeledField(
+          "Colormap",
           <select
             value={colormap}
             onChange={(e) => setColormap(e.target.value as ColormapName)}
@@ -320,91 +334,54 @@ const LfpSpectrogramInner: FunctionComponent<InnerProps> = ({
                 {c}
               </option>
             ))}
-          </select>
-        </LabeledField>
+          </select>,
+        )}
 
         <button
-          onClick={handleCompute}
-          disabled={computing}
+          onClick={() =>
+            setVisRange([dataStart, dataStart + Math.min(30, totalDuration)])
+          }
           style={{
-            padding: "6px 16px",
-            backgroundColor: computing ? "#6c757d" : "#007bff",
-            color: "white",
-            border: "none",
+            padding: "5px 12px",
+            border: "1px solid #dee2e6",
             borderRadius: 4,
-            cursor: computing ? "default" : "pointer",
+            background: "#f8f9fa",
+            cursor: "pointer",
           }}
         >
-          {computing ? "Computing..." : "Compute spectrogram"}
+          Reset view
         </button>
       </div>
 
-      <div style={{ fontSize: 12, color: "#555", padding: "0 4px 6px" }}>
-        Sampling rate: {samplingFrequency.toFixed(1)} Hz · Freq resolution:{" "}
-        {freqResolution.toFixed(2)} Hz · Time resolution:{" "}
-        {timeResolution.toFixed(3)} s
-        {tooManySamples && (
-          <span style={{ color: "#e67e22" }}>
-            {" "}
-            · Warning: selection has ~{estimatedSamples.toLocaleString()}{" "}
-            samples (limit {MAX_SAMPLES.toLocaleString()})
-          </span>
-        )}
+      <div style={{ fontSize: 12, color: "#555", padding: "0 4px 4px" }}>
+        Drag to pan · scroll to zoom · {samplingFrequency.toFixed(1)} Hz ·
+        window {visSpan.toFixed(2)} s{loading ? " · updating…" : ""}
+        {error ? <span style={{ color: "#e74c3c" }}> · {error}</span> : null}
       </div>
 
-      {computeError && (
-        <div style={{ color: "#e74c3c", padding: "4px", fontSize: 13 }}>
-          {computeError}
-        </div>
-      )}
-
-      {statusMessage && (
-        <div style={{ color: "#555", padding: "4px", fontSize: 13 }}>
-          {statusMessage}
-        </div>
-      )}
-
-      {result ? (
+      <div
+        ref={containerRef}
+        style={{ cursor: dragRef.current ? "grabbing" : "grab", width }}
+        onMouseDown={handleMouseDown}
+        onMouseMove={handleMouseMove}
+        onMouseUp={endDrag}
+        onMouseLeave={endDrag}
+        onWheel={handleWheel}
+      >
         <SpectrogramWidget
           result={result}
           width={width}
           height={plotHeight}
           colormap={colormap}
+          visibleStartTimeSec={visRange[0]}
+          visibleEndTimeSec={visRange[1]}
           freqMinHz={0}
           freqMaxHz={freqMaxHz}
+          loading={loading}
         />
-      ) : (
-        !computing &&
-        !computeError && (
-          <div
-            style={{
-              width,
-              height: plotHeight,
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              color: "#888",
-              border: "1px dashed #ccc",
-              boxSizing: "border-box",
-            }}
-          >
-            Configure the parameters above and click "Compute spectrogram" to
-            visualize {path.split("/").pop()}.
-          </div>
-        )
-      )}
+      </div>
     </div>
   );
 };
-
-const LabeledField: FunctionComponent<{
-  label: string;
-  children: React.ReactNode;
-}> = ({ label, children }) => (
-  <label style={{ display: "flex", flexDirection: "column", gap: 3 }}>
-    <span style={{ color: "#555", fontSize: 11 }}>{label}</span>
-    {children}
-  </label>
-);
 
 export default LfpSpectrogramView;
