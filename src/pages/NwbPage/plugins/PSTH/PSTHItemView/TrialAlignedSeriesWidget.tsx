@@ -15,6 +15,61 @@ type TrialAlignedSeriesWidgetProps = {
   showStdBand?: boolean; // draw dashed mean +/- N*std lines (default false)
   stdMultiple?: number; // the multiple N of std for the band (default 1)
   yAxisLabel?: string; // label for the value axis (default "ROI")
+  // Compute the mean (and std band) separately per group, drawn in each
+  // group's color, instead of a single black mean across all trials.
+  // Default false preserves the original behavior.
+  perGroupStats?: boolean;
+};
+
+type AverageCurve = {
+  color: string;
+  times: number[];
+  values: number[];
+  stds: number[];
+};
+
+// Mean and sample standard deviation of a set of traces interpolated onto a
+// common time grid.
+const computeMeanStd = (
+  plots: { times: number[]; values: number[] }[],
+  times: number[],
+): { values: number[]; stds: number[] } => {
+  const n = times.length;
+  const valueSums = new Array(n).fill(0);
+  const valueSqSums = new Array(n).fill(0);
+  const valueCounts = new Array(n).fill(0);
+  for (const plot of plots) {
+    const values = interpolateOntoGrid(plot.times, plot.values, times);
+    for (let i = 0; i < n; i++) {
+      if (!isNaN(values[i])) {
+        valueSums[i] += values[i];
+        valueSqSums[i] += values[i] * values[i];
+        valueCounts[i] += 1;
+      }
+    }
+  }
+  const values: number[] = [];
+  const stds: number[] = [];
+  for (let i = 0; i < n; i++) {
+    const c = valueCounts[i];
+    if (c !== 0) {
+      const mean = valueSums[i] / c;
+      values.push(mean);
+      if (c > 1) {
+        const variance = Math.max(
+          0,
+          (valueSqSums[i] - c * mean * mean) / (c - 1),
+        );
+        stds.push(Math.sqrt(variance));
+      } else {
+        stds.push(NaN);
+      }
+    } else {
+      values.push(NaN);
+      stds.push(NaN);
+    }
+  }
+  return { values, stds };
 };
 
 const TrialAlignedSeriesWidget: FunctionComponent<
@@ -30,77 +85,61 @@ const TrialAlignedSeriesWidget: FunctionComponent<
   showStdBand = false,
   stdMultiple = 1,
   yAxisLabel = "ROI",
+  perGroupStats = false,
 }) => {
-  const plots: { times: number[]; values: number[]; color: string }[] =
-    useMemo(() => {
-      const colorsByGroup: { [key: number | string]: string } = {};
-      for (const g of groups) {
-        colorsByGroup[g.group] = g.color;
-      }
-      const ret: { times: number[]; values: number[]; color: string }[] = [];
-      for (let j = 0; j < trials.length; j++) {
-        const groupColor = colorsByGroup[trials[j].group];
-        if (!groupColor) continue;
-        ret.push({
-          times: trials[j].times,
-          values: trials[j].roiValues || [],
-          color: groupColor,
-        });
-      }
-      return ret;
-    }, [trials, groups]);
-  // Mean and standard deviation of the trials interpolated onto a common grid.
-  const averagePlot: { times: number[]; values: number[]; stds: number[] } =
-    useMemo(() => {
-      const times: number[] = [];
-      for (let i = 0; i < 200; i++) {
-        times.push(
-          windowRange.start + ((windowRange.end - windowRange.start) * i) / 200,
-        );
-      }
-      const valueSums = new Array(200).fill(0);
-      const valueSqSums = new Array(200).fill(0);
-      const valueCounts = new Array(200).fill(0);
-      for (const plot of plots) {
-        const values = interpolateOntoGrid(plot.times, plot.values, times);
-        for (let i = 0; i < 200; i++) {
-          if (!isNaN(values[i])) {
-            valueSums[i] += values[i];
-            valueSqSums[i] += values[i] * values[i];
-            valueCounts[i] += 1;
-          }
-        }
-      }
-      const values: number[] = [];
-      const stds: number[] = [];
-      for (let i = 0; i < 200; i++) {
-        const n = valueCounts[i];
-        if (n !== 0) {
-          const mean = valueSums[i] / n;
-          values.push(mean);
-          if (n > 1) {
-            // Sample standard deviation.
-            const variance = Math.max(
-              0,
-              (valueSqSums[i] - n * mean * mean) / (n - 1),
-            );
-            stds.push(Math.sqrt(variance));
-          } else {
-            stds.push(NaN);
-          }
-        } else {
-          values.push(NaN);
-          stds.push(NaN);
-        }
-      }
-      return { times, values, stds };
-    }, [plots, windowRange]);
+  const plots: {
+    times: number[];
+    values: number[];
+    color: string;
+  }[] = useMemo(() => {
+    const colorsByGroup: { [key: number | string]: string } = {};
+    for (const g of groups) {
+      colorsByGroup[g.group] = g.color;
+    }
+    const ret: { times: number[]; values: number[]; color: string }[] = [];
+    for (let j = 0; j < trials.length; j++) {
+      const groupColor = colorsByGroup[trials[j].group];
+      if (!groupColor) continue;
+      ret.push({
+        times: trials[j].times,
+        values: trials[j].roiValues || [],
+        color: groupColor,
+      });
+    }
+    return ret;
+  }, [trials, groups]);
+  // One mean/std curve overall, or one per group when perGroupStats is set.
+  const averageCurves: AverageCurve[] = useMemo(() => {
+    const times: number[] = [];
+    for (let i = 0; i < 200; i++) {
+      times.push(
+        windowRange.start + ((windowRange.end - windowRange.start) * i) / 200,
+      );
+    }
+    if (!perGroupStats) {
+      const { values, stds } = computeMeanStd(plots, times);
+      return [{ color: "black", times, values, stds }];
+    }
+    // Group the traces by color (each group has a distinct color).
+    const byColor = new Map<string, { times: number[]; values: number[] }[]>();
+    for (const p of plots) {
+      const arr = byColor.get(p.color);
+      if (arr) arr.push(p);
+      else byColor.set(p.color, [p]);
+    }
+    const curves: AverageCurve[] = [];
+    for (const [color, groupPlots] of byColor.entries()) {
+      const { values, stds } = computeMeanStd(groupPlots, times);
+      curves.push({ color, times, values, stds });
+    }
+    return curves;
+  }, [plots, windowRange, perGroupStats]);
   return (
     <PlotChild
       width={width}
       height={height}
       plots={plots}
-      averagePlot={averagePlot}
+      averageCurves={averageCurves}
       windowRange={windowRange}
       maxNumRois={50}
       showRawTraces={showRawTraces}
@@ -108,6 +147,7 @@ const TrialAlignedSeriesWidget: FunctionComponent<
       showStdBand={showStdBand}
       stdMultiple={stdMultiple}
       yAxisLabel={yAxisLabel}
+      perGroupStats={perGroupStats}
     />
   );
 };
@@ -116,7 +156,7 @@ type PlotChildProps = {
   width: number;
   height: number;
   plots: { times: number[]; values: number[]; color: string }[];
-  averagePlot: { times: number[]; values: number[]; stds: number[] };
+  averageCurves: AverageCurve[];
   windowRange: { start: number; end: number };
   maxNumRois: number;
   showRawTraces: boolean;
@@ -124,13 +164,14 @@ type PlotChildProps = {
   showStdBand: boolean;
   stdMultiple: number;
   yAxisLabel: string;
+  perGroupStats: boolean;
 };
 
 const PlotChild: FunctionComponent<PlotChildProps> = ({
   width,
   height,
   plots,
-  averagePlot,
+  averageCurves,
   windowRange,
   maxNumRois,
   showRawTraces,
@@ -138,6 +179,7 @@ const PlotChild: FunctionComponent<PlotChildProps> = ({
   showStdBand,
   stdMultiple,
   yAxisLabel,
+  perGroupStats,
 }) => {
   const [canvasElement, setCanvasElement] = useState<
     HTMLCanvasElement | undefined
@@ -159,14 +201,16 @@ const PlotChild: FunctionComponent<PlotChildProps> = ({
     let maxValue = sortedValues[Math.floor(sortedValues.length * 0.995)];
     // Make sure the std band fits within the displayed range.
     if (showStdBand) {
-      for (let i = 0; i < averagePlot.values.length; i++) {
-        const m = averagePlot.values[i];
-        const s = averagePlot.stds[i];
-        if (isNaN(m) || isNaN(s)) continue;
-        const lo = m - stdMultiple * s;
-        const hi = m + stdMultiple * s;
-        if (isNaN(minValue) || lo < minValue) minValue = lo;
-        if (isNaN(maxValue) || hi > maxValue) maxValue = hi;
+      for (const curve of averageCurves) {
+        for (let i = 0; i < curve.values.length; i++) {
+          const m = curve.values[i];
+          const s = curve.stds[i];
+          if (isNaN(m) || isNaN(s)) continue;
+          const lo = m - stdMultiple * s;
+          const hi = m + stdMultiple * s;
+          if (isNaN(minValue) || lo < minValue) minValue = lo;
+          if (isNaN(maxValue) || hi > maxValue) maxValue = hi;
+        }
       }
     }
     if (!isFinite(minValue) || !isFinite(maxValue)) {
@@ -177,7 +221,7 @@ const PlotChild: FunctionComponent<PlotChildProps> = ({
       maxValue = minValue + 1;
     }
     return { minValue, maxValue };
-  }, [plots, showStdBand, stdMultiple, averagePlot]);
+  }, [plots, showStdBand, stdMultiple, averageCurves]);
   const coordToPixel = useMemo(
     () => (t: number, v: number) => {
       const x =
@@ -231,37 +275,40 @@ const PlotChild: FunctionComponent<PlotChildProps> = ({
       });
       ctx.globalAlpha = 1;
     }
-    //average plot
-    ctx.strokeStyle = "black";
-    ctx.lineWidth = 4;
-    ctx.beginPath();
-    let active = false;
-    for (let i = 0; i < averagePlot.values.length; i++) {
-      const t = averagePlot.times[i];
-      const v = averagePlot.values[i];
-      if (isNaN(v)) {
-        active = false;
-        continue;
+    // mean curve(s): one black line overall, or one per group in its color.
+    const meanLineWidth = perGroupStats ? 3 : 4;
+    for (const curve of averageCurves) {
+      ctx.strokeStyle = curve.color;
+      ctx.lineWidth = meanLineWidth;
+      ctx.beginPath();
+      let active = false;
+      for (let i = 0; i < curve.values.length; i++) {
+        const t = curve.times[i];
+        const v = curve.values[i];
+        if (isNaN(v)) {
+          active = false;
+          continue;
+        }
+        const p1 = coordToPixel(t, v);
+        if (!active) {
+          ctx.moveTo(p1.x, p1.y);
+          active = true;
+        } else {
+          ctx.lineTo(p1.x, p1.y);
+        }
       }
-      const p1 = coordToPixel(t, v);
-      if (!active) {
-        ctx.moveTo(p1.x, p1.y);
-        active = true;
-      } else {
-        ctx.lineTo(p1.x, p1.y);
-      }
+      ctx.stroke();
     }
-    ctx.stroke();
 
-    // mean +/- N*std as dashed lines
+    // mean +/- N*std as dashed lines (per curve, in the curve's color)
     if (showStdBand) {
-      const drawBand = (sign: number) => {
+      const drawBand = (curve: AverageCurve, sign: number) => {
         ctx.beginPath();
         let bandActive = false;
-        for (let i = 0; i < averagePlot.values.length; i++) {
-          const t = averagePlot.times[i];
-          const m = averagePlot.values[i];
-          const s = averagePlot.stds[i];
+        for (let i = 0; i < curve.values.length; i++) {
+          const t = curve.times[i];
+          const m = curve.values[i];
+          const s = curve.stds[i];
           if (isNaN(m) || isNaN(s)) {
             bandActive = false;
             continue;
@@ -278,10 +325,12 @@ const PlotChild: FunctionComponent<PlotChildProps> = ({
       };
       ctx.save();
       ctx.setLineDash([5, 4]);
-      ctx.strokeStyle = "#333";
       ctx.lineWidth = 1.5;
-      drawBand(1);
-      drawBand(-1);
+      for (const curve of averageCurves) {
+        ctx.strokeStyle = perGroupStats ? curve.color : "#333";
+        drawBand(curve, 1);
+        drawBand(curve, -1);
+      }
       ctx.restore();
     }
 
@@ -380,12 +429,13 @@ const PlotChild: FunctionComponent<PlotChildProps> = ({
     margins,
     coordToPixel,
     ticks,
-    averagePlot,
+    averageCurves,
     showRawTraces,
     rawTraceAlpha,
     showStdBand,
     stdMultiple,
     yAxisLabel,
+    perGroupStats,
   ]);
 
   return (

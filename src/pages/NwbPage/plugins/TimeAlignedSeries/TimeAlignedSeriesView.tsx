@@ -8,7 +8,9 @@ import {
 } from "react";
 import { useNeurodataObjects } from "../../useNeurodataObjects";
 import AlignToSelectionComponent from "../PSTH/PSTHItemView/components/AlignToSelection";
+import GroupBySelectionComponent from "../PSTH/PSTHItemView/components/GroupBySelection";
 import WindowRangeComponent from "../PSTH/PSTHItemView/components/WindowRange";
+import { useCategoricalOptions } from "../PSTH/PSTHItemView/hooks/useGroupByCategories";
 import TrialAlignedSeriesWidget from "../PSTH/PSTHItemView/TrialAlignedSeriesWidget";
 import TimeseriesClient from "../simple-timeseries/TimeseriesClient";
 import { isTimeSeriesLikeGroup } from "./detection";
@@ -26,6 +28,9 @@ type Props = {
   condensed?: boolean;
 };
 
+// Use all rows unless the table has more than this many.
+const DEFAULT_MAX_INTERVALS = 1000;
+
 const accordionSummaryStyle: CSSProperties = {
   cursor: "pointer",
   padding: "4px 8px",
@@ -36,6 +41,20 @@ const accordionSummaryStyle: CSSProperties = {
 };
 
 const seriesColor = "#1f77b4";
+
+const groupPalette = [
+  "#1f77b4",
+  "#d62728",
+  "#2ca02c",
+  "#9467bd",
+  "#ff7f0e",
+  "#17becf",
+  "#e377c2",
+  "#8c564b",
+  "#bcbd22",
+  "#7f7f7f",
+];
+const colorForGroupIndex = (i: number) => groupPalette[i % groupPalette.length];
 
 const shortName = (path: string) =>
   path.split("/").filter(Boolean).pop() || path;
@@ -111,11 +130,11 @@ type InnerProps = {
 };
 
 type CommittedParams = {
-  channel: number;
-  alignToVariables: string[];
   windowRange: { start: number; end: number };
-  maxTrials: number;
+  maxIntervals: number;
 };
+
+type Group = { group: string; color: string };
 
 const TimeAlignedSeriesInner: FunctionComponent<InnerProps> = ({
   nwbUrl,
@@ -154,18 +173,58 @@ const TimeAlignedSeriesInner: FunctionComponent<InnerProps> = ({
 
   const numChannels = client ? client.numChannels : 1;
 
-  const [channel, setChannel] = useState(0);
+  // Channel and align-to selections apply live (like the PSTH unit selector).
+  const [selectedChannels, setSelectedChannels] = useState<number[]>([0]);
   const [alignToVariables, setAlignToVariables] = useState<string[]>([
     "start_time",
   ]);
+
+  // Keep the channel selection within range when the series changes.
+  useEffect(() => {
+    if (!client) return;
+    setSelectedChannels((prev) => {
+      const filtered = prev.filter((c) => c < client.numChannels);
+      return filtered.length > 0 ? filtered : [0];
+    });
+  }, [client]);
+
+  // Window range and max intervals require an explicit Update (they trigger
+  // reloading of the snippet data).
   const [windowRangeStr, setWindowRangeStr] = useState<{
     start: string;
     end: string;
   }>({ start: "-0.5", end: "1" });
-  const [maxTrialsStr, setMaxTrialsStr] = useState("50");
+  const [maxIntervalsStr, setMaxIntervalsStr] = useState(
+    String(DEFAULT_MAX_INTERVALS),
+  );
+  const [committed, setCommitted] = useState<CommittedParams>({
+    windowRange: { start: -0.5, end: 1 },
+    maxIntervals: DEFAULT_MAX_INTERVALS,
+  });
+  const [paramError, setParamError] = useState<string | null>(null);
 
-  // Display options apply live (no data reload needed).
-  const [showRawTraces, setShowRawTraces] = useState(true);
+  const handleUpdate = () => {
+    const start = parseFloat(windowRangeStr.start);
+    const end = parseFloat(windowRangeStr.end);
+    if (isNaN(start) || isNaN(end)) {
+      setParamError("Invalid window range.");
+      return;
+    }
+    if (end <= start) {
+      setParamError("Window end must be greater than start.");
+      return;
+    }
+    const maxIntervals = parseInt(maxIntervalsStr);
+    if (isNaN(maxIntervals) || maxIntervals < 1) {
+      setParamError("Invalid maximum number of intervals.");
+      return;
+    }
+    setParamError(null);
+    setCommitted({ windowRange: { start, end }, maxIntervals });
+  };
+
+  // Display options apply live (no data reload). Opacity 0 hides raw traces,
+  // so no separate checkbox is needed.
   const [rawTraceAlpha, setRawTraceAlpha] = useState(0.4);
   const [showStdBand, setShowStdBand] = useState(true);
   const [stdMultipleStr, setStdMultipleStr] = useState("1");
@@ -174,70 +233,64 @@ const TimeAlignedSeriesInner: FunctionComponent<InnerProps> = ({
     return isNaN(v) || v < 0 ? 1 : v;
   }, [stdMultipleStr]);
 
-  // Keep the channel selection within range when the series changes.
-  useEffect(() => {
-    if (client && channel > client.numChannels - 1) {
-      setChannel(Math.max(0, client.numChannels - 1));
-    }
-  }, [client, channel]);
+  // Group by (live). Only offered when the table has categorical columns.
+  const categoricalOptions = useCategoricalOptions(nwbUrl, intervalsPath);
+  const [groupByVariable, setGroupByVariable] = useState<string>("");
 
-  const parseParams = (): CommittedParams | { error: string } => {
-    const start = parseFloat(windowRangeStr.start);
-    const end = parseFloat(windowRangeStr.end);
-    if (isNaN(start) || isNaN(end)) return { error: "Invalid window range." };
-    if (end <= start)
-      return { error: "Window end must be greater than start." };
-    const maxTrials = parseInt(maxTrialsStr);
-    if (isNaN(maxTrials) || maxTrials < 1)
-      return { error: "Invalid maximum number of trials." };
-    if (alignToVariables.length === 0)
-      return { error: "Select at least one align-to column." };
-    return {
-      channel,
-      alignToVariables: [...alignToVariables],
-      windowRange: { start, end },
-      maxTrials,
-    };
-  };
-
-  const initialCommitted = useMemo<CommittedParams>(
-    () => ({
-      channel: 0,
-      alignToVariables: ["start_time"],
-      windowRange: { start: -0.5, end: 1 },
-      maxTrials: 50,
-    }),
-    [],
+  const [groupByValues, setGroupByValues] = useState<string[] | undefined>(
+    undefined,
   );
-  const [committed, setCommitted] = useState<CommittedParams>(initialCommitted);
-  const [paramError, setParamError] = useState<string | null>(null);
-
-  const handleUpdate = () => {
-    const parsed = parseParams();
-    if ("error" in parsed) {
-      setParamError(parsed.error);
+  useEffect(() => {
+    if (!groupByVariable) {
+      setGroupByValues(undefined);
       return;
     }
-    setParamError(null);
-    setCommitted(parsed);
-  };
+    let canceled = false;
+    (async () => {
+      const dd = await getHdf5DatasetData(
+        nwbUrl,
+        intervalsPath + "/" + groupByVariable,
+        {},
+      );
+      if (canceled || !dd) return;
+      setGroupByValues(
+        [...dd].map((x) => (x as { toString(): string }).toString()),
+      );
+    })();
+    return () => {
+      canceled = true;
+    };
+  }, [nwbUrl, intervalsPath, groupByVariable]);
+
+  const groups: Group[] | undefined = useMemo(() => {
+    if (!groupByVariable) return undefined;
+    const opt = categoricalOptions?.find(
+      (o) => o.variableName === groupByVariable,
+    );
+    const cats = opt
+      ? [...opt.categories].sort()
+      : groupByValues
+        ? [...new Set(groupByValues)].sort()
+        : [];
+    return cats.map((c, i) => ({ group: c, color: colorForGroupIndex(i) }));
+  }, [groupByVariable, categoricalOptions, groupByValues]);
 
   const controlsWidth = 260;
   const plotAreaWidth = width - controlsWidth;
-  const panelHeight = Math.min(
-    height,
-    committed.alignToVariables.length > 1 ? 420 : 520,
+  const gap = 8;
+  const numAlign = alignToVariables.length || 1;
+  const panelWidth = Math.max(
+    240,
+    (plotAreaWidth - 20 - gap * (numAlign - 1)) / numAlign,
   );
+  const panelHeight =
+    selectedChannels.length > 1
+      ? 320
+      : Math.min(Math.max(height - 80, 300), 480);
+  const legendActive = !!groups && groupByVariable !== "";
 
   return (
-    <div
-      style={{
-        position: "absolute",
-        width,
-        height,
-        overflow: "hidden",
-      }}
-    >
+    <div style={{ position: "absolute", width, height, overflow: "hidden" }}>
       <div
         style={{
           position: "absolute",
@@ -274,38 +327,21 @@ const TimeAlignedSeriesInner: FunctionComponent<InnerProps> = ({
                 fontSize: "0.9em",
               }}
             >
-              {seriesPath}
+              {client
+                ? `${numChannels} channel${numChannels === 1 ? "" : "s"} · ${client.samplingFrequency.toFixed(1)} Hz`
+                : "Loading series..."}
             </div>
           </div>
         </details>
         <div style={{ height: 6 }} />
         <details open>
-          <summary style={accordionSummaryStyle}>Channel</summary>
-          <div style={{ padding: "6px 8px" }}>
-            <label>
-              Channel (0&ndash;{numChannels - 1}):&nbsp;
-              <input
-                type="number"
-                min={0}
-                max={numChannels - 1}
-                value={channel}
-                disabled={!client}
-                onChange={(e) =>
-                  setChannel(
-                    Math.max(
-                      0,
-                      Math.min(numChannels - 1, parseInt(e.target.value) || 0),
-                    ),
-                  )
-                }
-                style={{ width: 70 }}
-              />
-            </label>
-            <div style={{ color: "#666", marginTop: 4 }}>
-              {client
-                ? `${numChannels} channel${numChannels === 1 ? "" : "s"} · ${client.samplingFrequency.toFixed(1)} Hz`
-                : "Loading series..."}
-            </div>
+          <summary style={accordionSummaryStyle}>Channels</summary>
+          <div style={{ maxHeight: 220, overflowY: "auto" }}>
+            <ChannelSelection
+              numChannels={numChannels}
+              selectedChannels={selectedChannels}
+              setSelectedChannels={setSelectedChannels}
+            />
           </div>
         </details>
         <div style={{ height: 6 }} />
@@ -329,15 +365,25 @@ const TimeAlignedSeriesInner: FunctionComponent<InnerProps> = ({
             <br />
             <br />
             <label>
-              Max trials:&nbsp;
+              Max intervals:&nbsp;
               <input
                 type="number"
                 min={1}
-                value={maxTrialsStr}
-                onChange={(e) => setMaxTrialsStr(e.target.value)}
-                style={{ width: 60 }}
+                value={maxIntervalsStr}
+                onChange={(e) => setMaxIntervalsStr(e.target.value)}
+                style={{ width: 70 }}
               />
             </label>
+            {categoricalOptions && categoricalOptions.length > 0 && (
+              <div style={{ marginTop: 10 }}>
+                <GroupBySelectionComponent
+                  groupByVariable={groupByVariable}
+                  setGroupByVariable={setGroupByVariable}
+                  nwbUrl={nwbUrl}
+                  path={intervalsPath}
+                />
+              </div>
+            )}
             <div style={{ marginTop: 10 }}>
               <button
                 onClick={handleUpdate}
@@ -362,35 +408,20 @@ const TimeAlignedSeriesInner: FunctionComponent<InnerProps> = ({
         <details open>
           <summary style={accordionSummaryStyle}>Display</summary>
           <div style={{ padding: "6px 8px" }}>
-            <label style={{ display: "block" }}>
+            <label>
+              Raw trace opacity: {rawTraceAlpha.toFixed(2)}
+              {rawTraceAlpha === 0 ? " (hidden)" : ""}
+              <br />
               <input
-                type="checkbox"
-                checked={showRawTraces}
-                onChange={(e) => setShowRawTraces(e.target.checked)}
+                type="range"
+                min={0}
+                max={1}
+                step={0.05}
+                value={rawTraceAlpha}
+                onChange={(e) => setRawTraceAlpha(parseFloat(e.target.value))}
+                style={{ width: "100%" }}
               />
-              &nbsp;Show raw traces
             </label>
-            <div
-              style={{
-                marginTop: 6,
-                opacity: showRawTraces ? 1 : 0.4,
-              }}
-            >
-              <label>
-                Opacity: {rawTraceAlpha.toFixed(2)}
-                <br />
-                <input
-                  type="range"
-                  min={0.05}
-                  max={1}
-                  step={0.05}
-                  value={rawTraceAlpha}
-                  disabled={!showRawTraces}
-                  onChange={(e) => setRawTraceAlpha(parseFloat(e.target.value))}
-                  style={{ width: "100%" }}
-                />
-              </label>
-            </div>
             <hr style={{ margin: "8px 0", borderColor: "#dde4ed" }} />
             <label style={{ display: "block" }}>
               <input
@@ -428,44 +459,89 @@ const TimeAlignedSeriesInner: FunctionComponent<InnerProps> = ({
           overflowX: "hidden",
         }}
       >
+        {legendActive && (
+          <div
+            style={{
+              display: "flex",
+              gap: 14,
+              flexWrap: "wrap",
+              alignItems: "center",
+              padding: "6px 8px",
+            }}
+          >
+            <span style={{ fontWeight: "bold" }}>{groupByVariable}:</span>
+            {groups!.map((g) => (
+              <span
+                key={g.group}
+                style={{ display: "flex", alignItems: "center", gap: 4 }}
+              >
+                <span
+                  style={{
+                    width: 14,
+                    height: 14,
+                    background: g.color,
+                    display: "inline-block",
+                  }}
+                />
+                <span>{g.group}</span>
+              </span>
+            ))}
+          </div>
+        )}
         {clientError ? (
           <div style={{ padding: 12, color: "#e74c3c" }}>
             Error loading series: {clientError}
           </div>
         ) : !client ? (
           <div style={{ padding: 12, color: "#555" }}>Loading series...</div>
-        ) : committed.alignToVariables.length === 0 ? (
+        ) : selectedChannels.length === 0 ? (
+          <div style={{ padding: 12 }}>Select one or more channels.</div>
+        ) : alignToVariables.length === 0 ? (
           <div style={{ padding: 12 }}>
             Select one or more align-to columns.
           </div>
         ) : (
-          committed.alignToVariables.map((alignToVariable) => (
-            <div
-              key={alignToVariable}
-              style={{
-                position: "relative",
-                width: plotAreaWidth - 20,
-                height: panelHeight,
-                marginBottom: 8,
-              }}
-            >
-              <AlignedSeriesPanel
-                nwbUrl={nwbUrl}
-                intervalsPath={intervalsPath}
-                seriesPath={seriesPath}
-                client={client}
-                alignToVariable={alignToVariable}
-                channel={committed.channel}
-                windowRange={committed.windowRange}
-                maxTrials={committed.maxTrials}
-                width={plotAreaWidth - 20}
-                height={panelHeight}
-                showRawTraces={showRawTraces}
-                rawTraceAlpha={rawTraceAlpha}
-                showStdBand={showStdBand}
-                stdMultiple={stdMultiple}
-                yAxisLabel={`ch ${committed.channel}`}
-              />
+          selectedChannels.map((ch) => (
+            <div key={ch} style={{ marginBottom: 12 }}>
+              <div
+                style={{
+                  fontWeight: "bold",
+                  padding: "2px 8px",
+                  fontSize: 14,
+                }}
+              >
+                Channel {ch}
+              </div>
+              <div style={{ display: "flex", gap }}>
+                {alignToVariables.map((alignToVariable) => (
+                  <div
+                    key={alignToVariable}
+                    style={{
+                      position: "relative",
+                      width: panelWidth,
+                      height: panelHeight,
+                    }}
+                  >
+                    <AlignedSeriesPanel
+                      nwbUrl={nwbUrl}
+                      intervalsPath={intervalsPath}
+                      client={client}
+                      alignToVariable={alignToVariable}
+                      channel={ch}
+                      windowRange={committed.windowRange}
+                      maxIntervals={committed.maxIntervals}
+                      width={panelWidth}
+                      height={panelHeight}
+                      rawTraceAlpha={rawTraceAlpha}
+                      showStdBand={showStdBand}
+                      stdMultiple={stdMultiple}
+                      groupByValues={groupByValues}
+                      groups={groups}
+                      yAxisLabel={`ch ${ch}`}
+                    />
+                  </div>
+                ))}
+              </div>
             </div>
           ))
         )}
@@ -474,21 +550,84 @@ const TimeAlignedSeriesInner: FunctionComponent<InnerProps> = ({
   );
 };
 
+type ChannelSelectionProps = {
+  numChannels: number;
+  selectedChannels: number[];
+  setSelectedChannels: (x: number[] | ((prev: number[]) => number[])) => void;
+};
+
+const ChannelSelection: FunctionComponent<ChannelSelectionProps> = ({
+  numChannels,
+  selectedChannels,
+  setSelectedChannels,
+}) => {
+  const channels = useMemo(
+    () => Array.from({ length: numChannels }, (_, i) => i),
+    [numChannels],
+  );
+  const allSelected =
+    channels.length > 0 && selectedChannels.length === channels.length;
+  return (
+    <table className="nwb-table" style={{ tableLayout: "fixed" }}>
+      <colgroup>
+        <col style={{ width: 20 }} />
+      </colgroup>
+      <thead>
+        <tr>
+          <th style={{ padding: "4px 2px" }}>
+            <input
+              type="checkbox"
+              checked={allSelected}
+              onChange={() => {}}
+              onClick={() => {
+                if (selectedChannels.length > 0) setSelectedChannels([]);
+                else setSelectedChannels(channels);
+              }}
+            />
+          </th>
+          <th>Channel</th>
+        </tr>
+      </thead>
+      <tbody>
+        {channels.map((ch) => (
+          <tr key={ch}>
+            <td style={{ padding: "4px 2px" }}>
+              <input
+                type="checkbox"
+                checked={selectedChannels.includes(ch)}
+                onChange={() => {}}
+                onClick={() => {
+                  setSelectedChannels((prev) =>
+                    prev.includes(ch)
+                      ? prev.filter((x) => x !== ch)
+                      : [...prev, ch].sort((a, b) => a - b),
+                  );
+                }}
+              />
+            </td>
+            <td>{ch}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+};
+
 type PanelProps = {
   nwbUrl: string;
   intervalsPath: string;
-  seriesPath: string;
   client: TimeseriesClient;
   alignToVariable: string;
   channel: number;
   windowRange: { start: number; end: number };
-  maxTrials: number;
+  maxIntervals: number;
   width: number;
   height: number;
-  showRawTraces: boolean;
   rawTraceAlpha: number;
   showStdBand: boolean;
   stdMultiple: number;
+  groupByValues: string[] | undefined;
+  groups: Group[] | undefined;
   yAxisLabel: string;
 };
 
@@ -499,16 +638,17 @@ const AlignedSeriesPanel: FunctionComponent<PanelProps> = ({
   alignToVariable,
   channel,
   windowRange,
-  maxTrials,
+  maxIntervals,
   width,
   height,
-  showRawTraces,
   rawTraceAlpha,
   showStdBand,
   stdMultiple,
+  groupByValues,
+  groups,
   yAxisLabel,
 }) => {
-  const [trials, setTrials] = useState<AlignedTrial[] | null>(null);
+  const [rawTrials, setRawTrials] = useState<AlignedTrial[] | null>(null);
   const [numAlignTimes, setNumAlignTimes] = useState<number | null>(null);
   const [progress, setProgress] = useState<{ loaded: number; total: number }>({
     loaded: 0,
@@ -519,7 +659,7 @@ const AlignedSeriesPanel: FunctionComponent<PanelProps> = ({
   useEffect(() => {
     let canceled = false;
     const canceler = { canceled: false };
-    setTrials(null);
+    setRawTrials(null);
     setError(null);
     setProgress({ loaded: 0, total: 0 });
     (async () => {
@@ -540,7 +680,7 @@ const AlignedSeriesPanel: FunctionComponent<PanelProps> = ({
           channel,
           windowRange,
           {
-            maxTrials,
+            maxIntervals,
             canceler,
             onProgress: (loadedCount, total) => {
               if (!canceled) setProgress({ loaded: loadedCount, total });
@@ -548,7 +688,7 @@ const AlignedSeriesPanel: FunctionComponent<PanelProps> = ({
           },
         );
         if (canceled) return;
-        setTrials(loaded);
+        setRawTrials(loaded);
       } catch (err) {
         if (!canceled)
           setError(err instanceof Error ? err.message : String(err));
@@ -565,12 +705,30 @@ const AlignedSeriesPanel: FunctionComponent<PanelProps> = ({
     alignToVariable,
     channel,
     windowRange,
-    maxTrials,
+    maxIntervals,
   ]);
 
-  const groups = useMemo(() => [{ group: 0, color: seriesColor }], []);
+  // Only group once both the group definitions and the per-row values are
+  // ready; otherwise fall back to a single group (avoids a blank flash while
+  // the group-by column loads).
+  const grouping = !!groups && !!groupByValues;
 
-  const titleHeight = 24;
+  // Assign a group to each trial by its row index (live; no snippet reload).
+  const widgetTrials = useMemo(() => {
+    if (!rawTrials) return null;
+    return rawTrials.map((tr) => ({
+      times: tr.times,
+      roiValues: tr.roiValues,
+      group: grouping ? (groupByValues![tr.index] ?? "?") : 0,
+    }));
+  }, [rawTrials, grouping, groupByValues]);
+
+  const widgetGroups = useMemo(
+    () => (grouping ? groups! : [{ group: 0, color: seriesColor }]),
+    [grouping, groups],
+  );
+
+  const titleHeight = 22;
   const widgetHeight = height - titleHeight;
 
   return (
@@ -582,14 +740,16 @@ const AlignedSeriesPanel: FunctionComponent<PanelProps> = ({
           height: titleHeight,
           fontWeight: "bold",
           textAlign: "center",
+          fontSize: 13,
         }}
       >
         {alignToVariable}
         {numAlignTimes !== null && (
           <span style={{ fontWeight: "normal", color: "#666" }}>
             {" "}
-            ({Math.min(numAlignTimes, maxTrials)}
-            {numAlignTimes > maxTrials ? ` of ${numAlignTimes}` : ""} trials)
+            ({Math.min(numAlignTimes, maxIntervals)}
+            {numAlignTimes > maxIntervals ? ` of ${numAlignTimes}` : ""}{" "}
+            intervals)
           </span>
         )}
       </div>
@@ -603,28 +763,29 @@ const AlignedSeriesPanel: FunctionComponent<PanelProps> = ({
       >
         {error ? (
           <div style={{ padding: 12, color: "#e74c3c" }}>Error: {error}</div>
-        ) : !trials ? (
+        ) : !widgetTrials ? (
           <div style={{ padding: 12, color: "#555" }}>
             Loading snippets... {progress.loaded}
             {progress.total ? ` / ${progress.total}` : ""}
           </div>
-        ) : trials.length === 0 ? (
+        ) : widgetTrials.length === 0 ? (
           <div style={{ padding: 12, color: "#555" }}>
-            No trials to display.
+            No intervals to display.
           </div>
         ) : (
           <TrialAlignedSeriesWidget
             width={width}
             height={widgetHeight}
-            trials={trials}
-            groups={groups}
+            trials={widgetTrials}
+            groups={widgetGroups}
             windowRange={windowRange}
             alignmentVariableName={alignToVariable}
-            showRawTraces={showRawTraces}
+            showRawTraces={rawTraceAlpha > 0}
             rawTraceAlpha={rawTraceAlpha}
             showStdBand={showStdBand}
             stdMultiple={stdMultiple}
             yAxisLabel={yAxisLabel}
+            perGroupStats={grouping}
           />
         )}
       </div>

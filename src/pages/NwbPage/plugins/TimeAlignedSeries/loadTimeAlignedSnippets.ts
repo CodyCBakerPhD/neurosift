@@ -1,12 +1,13 @@
 import TimeseriesClient from "../simple-timeseries/TimeseriesClient";
 
 export type AlignedTrial = {
+  // Row index into the intervals table (preserved so group-by values can be
+  // matched per row without reloading the snippet data).
+  index: number;
   // Times relative to the alignment event (seconds).
   times: number[];
   // Signal values for a single channel over the snippet.
   roiValues: number[];
-  // Group is unused here (single group) but kept for widget compatibility.
-  group: number;
 };
 
 // Extract short snippets of a single channel of a TimeSeries around each
@@ -20,13 +21,13 @@ export const loadTimeAlignedSnippets = async (
   channel: number,
   windowRange: { start: number; end: number },
   opts: {
-    maxTrials: number;
+    maxIntervals: number;
     concurrency?: number;
     canceler?: { canceled: boolean };
     onProgress?: (loaded: number, total: number) => void;
   },
 ): Promise<AlignedTrial[]> => {
-  const times = alignTimes.slice(0, opts.maxTrials);
+  const times = alignTimes.slice(0, opts.maxIntervals);
   const trials: (AlignedTrial | undefined)[] = new Array(times.length);
   const concurrency = Math.max(
     1,
@@ -52,9 +53,9 @@ export const loadTimeAlignedSnippets = async (
       );
       const values = data[0] || [];
       trials[i] = {
+        index: i,
         times: timestamps.map((ts) => ts - t),
         roiValues: values,
-        group: 0,
       };
       loaded += 1;
       opts.onProgress?.(loaded, times.length);
