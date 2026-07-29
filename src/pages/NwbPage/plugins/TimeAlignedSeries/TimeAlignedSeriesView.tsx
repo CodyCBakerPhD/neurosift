@@ -164,6 +164,16 @@ const TimeAlignedSeriesInner: FunctionComponent<InnerProps> = ({
   }>({ start: "-0.5", end: "1" });
   const [maxTrialsStr, setMaxTrialsStr] = useState("50");
 
+  // Display options apply live (no data reload needed).
+  const [showRawTraces, setShowRawTraces] = useState(true);
+  const [rawTraceAlpha, setRawTraceAlpha] = useState(0.4);
+  const [showStdBand, setShowStdBand] = useState(true);
+  const [stdMultipleStr, setStdMultipleStr] = useState("1");
+  const stdMultiple = useMemo(() => {
+    const v = parseFloat(stdMultipleStr);
+    return isNaN(v) || v < 0 ? 1 : v;
+  }, [stdMultipleStr]);
+
   // Keep the channel selection within range when the series changes.
   useEffect(() => {
     if (client && channel > client.numChannels - 1) {
@@ -348,6 +358,64 @@ const TimeAlignedSeriesInner: FunctionComponent<InnerProps> = ({
             )}
           </div>
         </details>
+        <div style={{ height: 6 }} />
+        <details open>
+          <summary style={accordionSummaryStyle}>Display</summary>
+          <div style={{ padding: "6px 8px" }}>
+            <label style={{ display: "block" }}>
+              <input
+                type="checkbox"
+                checked={showRawTraces}
+                onChange={(e) => setShowRawTraces(e.target.checked)}
+              />
+              &nbsp;Show raw traces
+            </label>
+            <div
+              style={{
+                marginTop: 6,
+                opacity: showRawTraces ? 1 : 0.4,
+              }}
+            >
+              <label>
+                Opacity: {rawTraceAlpha.toFixed(2)}
+                <br />
+                <input
+                  type="range"
+                  min={0.05}
+                  max={1}
+                  step={0.05}
+                  value={rawTraceAlpha}
+                  disabled={!showRawTraces}
+                  onChange={(e) => setRawTraceAlpha(parseFloat(e.target.value))}
+                  style={{ width: "100%" }}
+                />
+              </label>
+            </div>
+            <hr style={{ margin: "8px 0", borderColor: "#dde4ed" }} />
+            <label style={{ display: "block" }}>
+              <input
+                type="checkbox"
+                checked={showStdBand}
+                onChange={(e) => setShowStdBand(e.target.checked)}
+              />
+              &nbsp;&plusmn;Std band (dashed)
+            </label>
+            <div style={{ marginTop: 6, opacity: showStdBand ? 1 : 0.4 }}>
+              <label>
+                Multiple (&sigma;):&nbsp;
+                <input
+                  type="number"
+                  min={0}
+                  step={0.1}
+                  value={stdMultipleStr}
+                  disabled={!showStdBand}
+                  onChange={(e) => setStdMultipleStr(e.target.value)}
+                  style={{ width: 60 }}
+                />
+              </label>
+            </div>
+          </div>
+        </details>
       </div>
 
       <div
@@ -392,6 +460,11 @@ const TimeAlignedSeriesInner: FunctionComponent<InnerProps> = ({
                 maxTrials={committed.maxTrials}
                 width={plotAreaWidth - 20}
                 height={panelHeight}
+                showRawTraces={showRawTraces}
+                rawTraceAlpha={rawTraceAlpha}
+                showStdBand={showStdBand}
+                stdMultiple={stdMultiple}
+                yAxisLabel={`ch ${committed.channel}`}
               />
             </div>
           ))
@@ -412,6 +485,11 @@ type PanelProps = {
   maxTrials: number;
   width: number;
   height: number;
+  showRawTraces: boolean;
+  rawTraceAlpha: number;
+  showStdBand: boolean;
+  stdMultiple: number;
+  yAxisLabel: string;
 };
 
 const AlignedSeriesPanel: FunctionComponent<PanelProps> = ({
@@ -424,6 +502,11 @@ const AlignedSeriesPanel: FunctionComponent<PanelProps> = ({
   maxTrials,
   width,
   height,
+  showRawTraces,
+  rawTraceAlpha,
+  showStdBand,
+  stdMultiple,
+  yAxisLabel,
 }) => {
   const [trials, setTrials] = useState<AlignedTrial[] | null>(null);
   const [numAlignTimes, setNumAlignTimes] = useState<number | null>(null);
@@ -537,6 +620,11 @@ const AlignedSeriesPanel: FunctionComponent<PanelProps> = ({
             groups={groups}
             windowRange={windowRange}
             alignmentVariableName={alignToVariable}
+            showRawTraces={showRawTraces}
+            rawTraceAlpha={rawTraceAlpha}
+            showStdBand={showStdBand}
+            stdMultiple={stdMultiple}
+            yAxisLabel={yAxisLabel}
           />
         )}
       </div>

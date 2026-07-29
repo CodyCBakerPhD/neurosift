@@ -9,11 +9,28 @@ type TrialAlignedSeriesWidgetProps = {
   groups: { group: any; color: string }[];
   windowRange: { start: number; end: number };
   alignmentVariableName: string;
+  // Display options (all optional; defaults preserve the original behavior).
+  showRawTraces?: boolean; // draw the per-trial traces (default true)
+  rawTraceAlpha?: number; // opacity of the per-trial traces, 0-1 (default 1)
+  showStdBand?: boolean; // draw dashed mean +/- N*std lines (default false)
+  stdMultiple?: number; // the multiple N of std for the band (default 1)
+  yAxisLabel?: string; // label for the value axis (default "ROI")
 };
 
 const TrialAlignedSeriesWidget: FunctionComponent<
   TrialAlignedSeriesWidgetProps
-> = ({ width, height, trials, groups, windowRange }) => {
+> = ({
+  width,
+  height,
+  trials,
+  groups,
+  windowRange,
+  showRawTraces = true,
+  rawTraceAlpha = 1,
+  showStdBand = false,
+  stdMultiple = 1,
+  yAxisLabel = "ROI",
+}) => {
   const plots: { times: number[]; values: number[]; color: string }[] =
     useMemo(() => {
       const colorsByGroup: { [key: number | string]: string } = {};
@@ -32,34 +49,52 @@ const TrialAlignedSeriesWidget: FunctionComponent<
       }
       return ret;
     }, [trials, groups]);
-  const averagePlot: { times: number[]; values: number[] } = useMemo(() => {
-    const times: number[] = [];
-    for (let i = 0; i < 200; i++) {
-      times.push(
-        windowRange.start + ((windowRange.end - windowRange.start) * i) / 200,
-      );
-    }
-    const valueSums = new Array(200).fill(0);
-    const valueCounts = new Array(200).fill(0);
-    for (const plot of plots) {
-      const values = interpolateOntoGrid(plot.times, plot.values, times);
+  // Mean and standard deviation of the trials interpolated onto a common grid.
+  const averagePlot: { times: number[]; values: number[]; stds: number[] } =
+    useMemo(() => {
+      const times: number[] = [];
       for (let i = 0; i < 200; i++) {
-        if (!isNaN(values[i])) {
-          valueSums[i] += values[i];
-          valueCounts[i] += 1;
+        times.push(
+          windowRange.start + ((windowRange.end - windowRange.start) * i) / 200,
+        );
+      }
+      const valueSums = new Array(200).fill(0);
+      const valueSqSums = new Array(200).fill(0);
+      const valueCounts = new Array(200).fill(0);
+      for (const plot of plots) {
+        const values = interpolateOntoGrid(plot.times, plot.values, times);
+        for (let i = 0; i < 200; i++) {
+          if (!isNaN(values[i])) {
+            valueSums[i] += values[i];
+            valueSqSums[i] += values[i] * values[i];
+            valueCounts[i] += 1;
+          }
         }
       }
-    }
-    const values: number[] = [];
-    for (let i = 0; i < 200; i++) {
-      if (valueCounts[i] !== 0) {
-        values.push(valueSums[i] / valueCounts[i]);
-      } else {
-        values.push(NaN);
+      const values: number[] = [];
+      const stds: number[] = [];
+      for (let i = 0; i < 200; i++) {
+        const n = valueCounts[i];
+        if (n !== 0) {
+          const mean = valueSums[i] / n;
+          values.push(mean);
+          if (n > 1) {
+            // Sample standard deviation.
+            const variance = Math.max(
+              0,
+              (valueSqSums[i] - n * mean * mean) / (n - 1),
+            );
+            stds.push(Math.sqrt(variance));
+          } else {
+            stds.push(NaN);
+          }
+        } else {
+          values.push(NaN);
+          stds.push(NaN);
+        }
       }
-    }
-    return { times, values };
-  }, [plots, windowRange]);
+      return { times, values, stds };
+    }, [plots, windowRange]);
   return (
     <PlotChild
       width={width}
@@ -68,6 +103,11 @@ const TrialAlignedSeriesWidget: FunctionComponent<
       averagePlot={averagePlot}
       windowRange={windowRange}
       maxNumRois={50}
+      showRawTraces={showRawTraces}
+      rawTraceAlpha={rawTraceAlpha}
+      showStdBand={showStdBand}
+      stdMultiple={stdMultiple}
+      yAxisLabel={yAxisLabel}
     />
   );
 };
@@ -76,9 +116,14 @@ type PlotChildProps = {
   width: number;
   height: number;
   plots: { times: number[]; values: number[]; color: string }[];
-  averagePlot: { times: number[]; values: number[] };
+  averagePlot: { times: number[]; values: number[]; stds: number[] };
   windowRange: { start: number; end: number };
   maxNumRois: number;
+  showRawTraces: boolean;
+  rawTraceAlpha: number;
+  showStdBand: boolean;
+  stdMultiple: number;
+  yAxisLabel: string;
 };
 
 const PlotChild: FunctionComponent<PlotChildProps> = ({
@@ -88,6 +133,11 @@ const PlotChild: FunctionComponent<PlotChildProps> = ({
   averagePlot,
   windowRange,
   maxNumRois,
+  showRawTraces,
+  rawTraceAlpha,
+  showStdBand,
+  stdMultiple,
+  yAxisLabel,
 }) => {
   const [canvasElement, setCanvasElement] = useState<
     HTMLCanvasElement | undefined
@@ -105,10 +155,29 @@ const PlotChild: FunctionComponent<PlotChildProps> = ({
     const sortedValues = allValues
       .filter((v) => !isNaN(v))
       .sort((a, b) => a - b);
-    const minValue = sortedValues[Math.floor(sortedValues.length * 0.005)];
-    const maxValue = sortedValues[Math.floor(sortedValues.length * 0.995)];
+    let minValue = sortedValues[Math.floor(sortedValues.length * 0.005)];
+    let maxValue = sortedValues[Math.floor(sortedValues.length * 0.995)];
+    // Make sure the std band fits within the displayed range.
+    if (showStdBand) {
+      for (let i = 0; i < averagePlot.values.length; i++) {
+        const m = averagePlot.values[i];
+        const s = averagePlot.stds[i];
+        if (isNaN(m) || isNaN(s)) continue;
+        const lo = m - stdMultiple * s;
+        const hi = m + stdMultiple * s;
+        if (isNaN(minValue) || lo < minValue) minValue = lo;
+        if (isNaN(maxValue) || hi > maxValue) maxValue = hi;
+      }
+    }
+    if (!isFinite(minValue) || !isFinite(maxValue)) {
+      minValue = 0;
+      maxValue = 1;
+    }
+    if (minValue === maxValue) {
+      maxValue = minValue + 1;
+    }
     return { minValue, maxValue };
-  }, [plots]);
+  }, [plots, showStdBand, stdMultiple, averagePlot]);
   const coordToPixel = useMemo(
     () => (t: number, v: number) => {
       const x =
@@ -143,21 +212,25 @@ const PlotChild: FunctionComponent<PlotChildProps> = ({
     ctx.font = "12px sans-serif";
 
     // plots
-    plotsSampled.forEach((p) => {
-      ctx.strokeStyle = p.color;
-      ctx.lineWidth = 0.5;
-      ctx.beginPath();
-      if (p.values.length === 0) return;
-      const p0 = coordToPixel(windowRange.start, p.values[0]);
-      ctx.moveTo(p0.x, p0.y);
-      for (let i = 1; i < p.values.length; i++) {
-        const t = p.times[i];
-        const v = p.values[i];
-        const p1 = coordToPixel(t, v);
-        ctx.lineTo(p1.x, p1.y);
-      }
-      ctx.stroke();
-    });
+    if (showRawTraces) {
+      ctx.globalAlpha = rawTraceAlpha;
+      plotsSampled.forEach((p) => {
+        ctx.strokeStyle = p.color;
+        ctx.lineWidth = 0.5;
+        ctx.beginPath();
+        if (p.values.length === 0) return;
+        const p0 = coordToPixel(windowRange.start, p.values[0]);
+        ctx.moveTo(p0.x, p0.y);
+        for (let i = 1; i < p.values.length; i++) {
+          const t = p.times[i];
+          const v = p.values[i];
+          const p1 = coordToPixel(t, v);
+          ctx.lineTo(p1.x, p1.y);
+        }
+        ctx.stroke();
+      });
+      ctx.globalAlpha = 1;
+    }
     //average plot
     ctx.strokeStyle = "black";
     ctx.lineWidth = 4;
@@ -180,6 +253,38 @@ const PlotChild: FunctionComponent<PlotChildProps> = ({
     }
     ctx.stroke();
 
+    // mean +/- N*std as dashed lines
+    if (showStdBand) {
+      const drawBand = (sign: number) => {
+        ctx.beginPath();
+        let bandActive = false;
+        for (let i = 0; i < averagePlot.values.length; i++) {
+          const t = averagePlot.times[i];
+          const m = averagePlot.values[i];
+          const s = averagePlot.stds[i];
+          if (isNaN(m) || isNaN(s)) {
+            bandActive = false;
+            continue;
+          }
+          const p1 = coordToPixel(t, m + sign * stdMultiple * s);
+          if (!bandActive) {
+            ctx.moveTo(p1.x, p1.y);
+            bandActive = true;
+          } else {
+            ctx.lineTo(p1.x, p1.y);
+          }
+        }
+        ctx.stroke();
+      };
+      ctx.save();
+      ctx.setLineDash([5, 4]);
+      ctx.strokeStyle = "#333";
+      ctx.lineWidth = 1.5;
+      drawBand(1);
+      drawBand(-1);
+      ctx.restore();
+    }
+
     // y axis
     ctx.strokeStyle = "gray";
     ctx.lineWidth = 1;
@@ -189,7 +294,6 @@ const PlotChild: FunctionComponent<PlotChildProps> = ({
     ctx.stroke();
 
     // y axis label
-    const yAxisLabel = "ROI";
     ctx.fillStyle = "black";
     ctx.textAlign = "center";
     ctx.textBaseline = "bottom";
@@ -277,6 +381,11 @@ const PlotChild: FunctionComponent<PlotChildProps> = ({
     coordToPixel,
     ticks,
     averagePlot,
+    showRawTraces,
+    rawTraceAlpha,
+    showStdBand,
+    stdMultiple,
+    yAxisLabel,
   ]);
 
   return (
