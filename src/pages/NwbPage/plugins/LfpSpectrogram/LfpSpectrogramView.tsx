@@ -8,6 +8,7 @@ import {
   useState,
 } from "react";
 import "../common/loadingState.css";
+import { ControlButton } from "../common/components/ControlButton";
 import TimeseriesClient from "../simple-timeseries/TimeseriesClient";
 import { ColormapName, colormapNames } from "./colormap";
 import { plotMargins } from "./plotConstants";
@@ -171,9 +172,14 @@ const LfpSpectrogramInner: FunctionComponent<InnerProps> = ({
     [totalDuration, samplingFrequency],
   );
 
+  // Narrowest allowed window (a handful of FFT windows).
+  const minSpan = useMemo(
+    () => Math.max((windowSize * 4) / samplingFrequency, 1e-3),
+    [windowSize, samplingFrequency],
+  );
+
   const clampRange = useCallback(
     (start: number, end: number): [number, number] => {
-      const minSpan = Math.max((windowSize * 4) / samplingFrequency, 1e-3);
       const span = Math.min(Math.max(end - start, minSpan), maxSpan || minSpan);
       let s = start;
       let e = s + span;
@@ -187,7 +193,29 @@ const LfpSpectrogramInner: FunctionComponent<InnerProps> = ({
       }
       return [s, e];
     },
-    [dataStart, dataEnd, maxSpan, windowSize, samplingFrequency],
+    [dataStart, dataEnd, maxSpan, minSpan],
+  );
+
+  // Button-driven zoom (about the view centre) and horizontal scroll.
+  const zoomByFactor = useCallback(
+    (factor: number) => {
+      setVisRange((prev) => {
+        const center = (prev[0] + prev[1]) / 2;
+        const newSpan = (prev[1] - prev[0]) * factor;
+        return clampRange(center - newSpan / 2, center + newSpan / 2);
+      });
+    },
+    [clampRange],
+  );
+
+  const panByFraction = useCallback(
+    (frac: number) => {
+      setVisRange((prev) => {
+        const dt = frac * (prev[1] - prev[0]);
+        return clampRange(prev[0] + dt, prev[1] + dt);
+      });
+    },
+    [clampRange],
   );
 
   // --- pan / zoom interaction ---
@@ -261,6 +289,11 @@ const LfpSpectrogramInner: FunctionComponent<InnerProps> = ({
   );
 
   const visSpan = visRange[1] - visRange[0];
+  const eps = 1e-6;
+  const canZoomIn = visSpan > minSpan + eps;
+  const canZoomOut = visSpan < maxSpan - eps;
+  const canPanLeft = visRange[0] > dataStart + eps;
+  const canPanRight = visRange[1] < dataEnd - eps;
 
   return (
     <div style={{ width }}>
@@ -353,10 +386,47 @@ const LfpSpectrogramInner: FunctionComponent<InnerProps> = ({
         </button>
       </div>
 
-      <div style={{ fontSize: 12, color: "#555", padding: "0 4px 4px" }}>
-        Drag to pan · scroll to zoom · {samplingFrequency.toFixed(1)} Hz ·
-        window {visSpan.toFixed(2)} s{loading ? " · updating…" : ""}
-        {error ? <span style={{ color: "#e74c3c" }}> · {error}</span> : null}
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: "5px",
+          padding: "2px 4px 4px",
+        }}
+      >
+        <ControlButton
+          onClick={() => zoomByFactor(0.5)}
+          disabled={!canZoomIn}
+          title="Zoom in (shorter time window)"
+        >
+          🔍+
+        </ControlButton>
+        <ControlButton
+          onClick={() => zoomByFactor(2)}
+          disabled={!canZoomOut}
+          title="Zoom out (longer time window)"
+        >
+          🔍-
+        </ControlButton>
+        <ControlButton
+          onClick={() => panByFraction(-0.8)}
+          disabled={!canPanLeft}
+          title="Scroll back in time"
+        >
+          ←
+        </ControlButton>
+        <ControlButton
+          onClick={() => panByFraction(0.8)}
+          disabled={!canPanRight}
+          title="Scroll forward in time"
+        >
+          →
+        </ControlButton>
+        <span style={{ fontSize: 12, color: "#555", marginLeft: 8 }}>
+          {samplingFrequency.toFixed(1)} Hz · window {visSpan.toFixed(2)} s ·
+          drag/scroll also works{loading ? " · updating…" : ""}
+          {error ? <span style={{ color: "#e74c3c" }}> · {error}</span> : null}
+        </span>
       </div>
 
       <div
