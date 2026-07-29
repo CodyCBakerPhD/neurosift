@@ -2,7 +2,7 @@ import { useEffect, useReducer } from "react";
 import { determineObjectType } from "../ObjectTypeUtils";
 import { NwbObjectViewPlugin } from "../plugins/pluginInterface";
 import { findPluginByName } from "../plugins/registry";
-import tabsReducer from "../tabsReducer";
+import tabsReducer, { parseSelectionItem } from "../tabsReducer";
 import { TabsState } from "../Types";
 
 interface UseTabManagerProps {
@@ -86,14 +86,24 @@ export const useTabManager = ({
   }, [initialTabId, nwbUrl]);
 
   const handleOpenObjectsInNewTab = async (paths: string[]) => {
-    if (paths.length === 1) {
-      const objectType = await determineObjectType(nwbUrl, paths[0]);
-      dispatch({ type: "OPEN_TAB", id: paths[0], path: paths[0], objectType });
-    } else {
-      const objectTypes = await Promise.all(
-        paths.map((path) => determineObjectType(nwbUrl, path)),
-      );
-      dispatch({ type: "OPEN_MULTI_TAB", paths, objectTypes });
+    // Selections may be plugin/launch strings ("<plugin>|<path>^..."), so the
+    // real object path must be parsed out before asking for its type — passing
+    // the raw string to determineObjectType would query a nonexistent path.
+    try {
+      if (paths.length === 1) {
+        const { path } = parseSelectionItem(paths[0]);
+        const objectType = await determineObjectType(nwbUrl, path);
+        dispatch({ type: "OPEN_TAB", id: paths[0], path, objectType });
+      } else {
+        const objectTypes = await Promise.all(
+          paths.map((p) =>
+            determineObjectType(nwbUrl, parseSelectionItem(p).path),
+          ),
+        );
+        dispatch({ type: "OPEN_MULTI_TAB", paths, objectTypes });
+      }
+    } catch (err) {
+      console.error("Failed to open objects in new tab", err);
     }
   };
 

@@ -140,23 +140,29 @@ const tabsReducer = (state: TabsState, action: TabsAction): TabsState => {
   }
 };
 
+// Parse a selection string. A plain object selection is just its path; a
+// plugin/launch selection is "<pluginName>|<path>[^<secondaryPath>...]".
+export const parseSelectionItem = (
+  itemString: string,
+): { path: string; pluginName?: string; secondaryPaths: string[] } => {
+  const a = itemString.split("|");
+  if (a.length <= 1) {
+    return { path: itemString, secondaryPaths: [] };
+  }
+  const b = a[1].split("^");
+  return { path: b[0], pluginName: a[0], secondaryPaths: b.slice(1) };
+};
+
 const getPathsAndPlugins = (itemStrings: string[]) => {
   const paths: string[] = [];
   const plugins: (NwbObjectViewPlugin | undefined)[] = [];
   const secondaryPathsList: (string[] | undefined)[] = [];
+  // Push to every array on each iteration so the four stay index-aligned.
   for (const itemString of itemStrings) {
-    const a = itemString.split("|");
-    if (a.length <= 1) {
-      paths.push(itemString);
-      plugins.push(undefined);
-    } else {
-      const b = a[1].split("^");
-      paths.push(b[0]);
-      const s = b.slice(1); // todo: use this
-      const p = findPluginByName(a[0]);
-      plugins.push(p);
-      secondaryPathsList.push(s);
-    }
+    const { path, pluginName, secondaryPaths } = parseSelectionItem(itemString);
+    paths.push(path);
+    plugins.push(pluginName ? findPluginByName(pluginName) : undefined);
+    secondaryPathsList.push(pluginName ? secondaryPaths : undefined);
   }
   return { paths, plugins, secondaryPathsList };
 };
