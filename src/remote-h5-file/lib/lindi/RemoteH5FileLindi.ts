@@ -5,7 +5,6 @@ import {
   RemoteH5Group,
   RemoteH5Subdataset,
   RemoteH5Subgroup,
-  // getRemoteH5File,
   globalRemoteH5FileStats,
 } from "../RemoteH5File";
 // import { Canceler } from "../helpers";
@@ -386,13 +385,6 @@ class RemoteH5FileLindi {
       // HDF5 file. Callers (see hdf5Interface.getHdf5DatasetData) handle this
       // by falling back to a direct read from the underlying blob.
       throw Error("External array link not supported on server side");
-      // const externalArrayLink = zattrs["_EXTERNAL_ARRAY_LINK"];
-      // let url0 = externalArrayLink.url;
-      // if (this.#cacheDisabled) {
-      //   url0 += `?cacheBust=${Date.now()}`;
-      // }
-      // const a = await getRemoteH5File(url0);
-      // return a.getDatasetData(externalArrayLink.name, o);
     }
 
     const ret = await lindiDatasetDataLoader({
