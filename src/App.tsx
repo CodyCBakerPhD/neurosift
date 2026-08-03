@@ -416,6 +416,7 @@ const AppContent = () => {
             path="/experimental-neurotile"
             element={<Navigate to="/experimental-neurosift-tiles" replace />}
           />
+          <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </div>
 
