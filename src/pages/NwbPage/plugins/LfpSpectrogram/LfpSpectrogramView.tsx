@@ -14,6 +14,7 @@ import ChannelSelector from "./ChannelSelector";
 import { ColormapName, colormapNames } from "./colormap";
 import { plotMargins } from "./plotConstants";
 import SpectrogramDataClient, {
+  limitChannels,
   MAX_AVG_CHANNELS,
 } from "./SpectrogramDataClient";
 import SpectrogramWidget from "./SpectrogramWidget";
@@ -32,6 +33,11 @@ const windowSizeOptions = [128, 256, 512, 1024, 2048, 4096];
 // Upper bound on samples pulled into the browser for one cached block. A block
 // spans up to ~8x the visible window, so this also bounds the widest zoom-out.
 const MAX_BLOCK_SAMPLES = 4_000_000;
+
+// Height of each stacked spectrogram in per-channel mode.
+const PER_CHANNEL_PANEL_HEIGHT = 200;
+
+type ChannelMode = "mean" | "perChannel";
 
 const LfpSpectrogramView: FunctionComponent<Props> = ({
   nwbUrl,
@@ -86,6 +92,98 @@ const LfpSpectrogramView: FunctionComponent<Props> = ({
   );
 };
 
+// A single spectrogram panel: owns the caching data client and the debounced
+// fetch for its channel set, and renders the widget for the shared visible
+// range. Used both for the averaged view and for one-per-channel stacking.
+type PanelProps = {
+  client: TimeseriesClient;
+  worker: Worker;
+  channels: number[];
+  windowSize: number;
+  visRange: [number, number];
+  width: number;
+  height: number;
+  colormap: ColormapName;
+  freqMaxHz: number;
+  label?: string;
+};
+
+const SpectrogramPanel: FunctionComponent<PanelProps> = ({
+  client,
+  worker,
+  channels,
+  windowSize,
+  visRange,
+  width,
+  height,
+  colormap,
+  freqMaxHz,
+  label,
+}) => {
+  const [result, setResult] = useState<SpectrogramResult | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  const channelsKey = channels.join(",");
+  const dataClient = useMemo(
+    () => new SpectrogramDataClient(client, worker, { channels, windowSize }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [client, worker, channelsKey, windowSize],
+  );
+
+  const reqRef = useRef(0);
+  useEffect(() => {
+    if (channels.length === 0) {
+      setResult(null);
+      setLoading(false);
+      return;
+    }
+    const handle = setTimeout(() => {
+      const reqId = ++reqRef.current;
+      setLoading(true);
+      dataClient
+        .getSpectrogram(visRange[0], visRange[1])
+        .then((r) => {
+          if (reqId !== reqRef.current) return;
+          setResult(r);
+          setLoading(false);
+        })
+        .catch(() => {
+          if (reqId !== reqRef.current) return;
+          setLoading(false);
+        });
+    }, 40);
+    return () => clearTimeout(handle);
+  }, [dataClient, visRange, channels.length]);
+
+  return (
+    <div>
+      {label !== undefined && (
+        <div
+          style={{
+            fontSize: 11,
+            color: "#495057",
+            padding: "2px 0 0 6px",
+            fontWeight: 500,
+          }}
+        >
+          {label}
+        </div>
+      )}
+      <SpectrogramWidget
+        result={result}
+        width={width}
+        height={height}
+        colormap={colormap}
+        visibleStartTimeSec={visRange[0]}
+        visibleEndTimeSec={visRange[1]}
+        freqMinHz={0}
+        freqMaxHz={freqMaxHz}
+        loading={loading}
+      />
+    </div>
+  );
+};
+
 type InnerProps = {
   client: TimeseriesClient;
   width: number;
@@ -110,6 +208,7 @@ const LfpSpectrogramInner: FunctionComponent<InnerProps> = ({
   const [windowSize, setWindowSize] = useState(512);
   const [colormap, setColormap] = useState<ColormapName>("viridis");
   const [freqMaxHz, setFreqMaxHz] = useState(Math.min(nyquist, 150));
+  const [channelMode, setChannelMode] = useState<ChannelMode>("mean");
 
   // Visible time window (seconds).
   const [visRange, setVisRange] = useState<[number, number]>(() => [
@@ -117,11 +216,7 @@ const LfpSpectrogramInner: FunctionComponent<InnerProps> = ({
     dataStart + Math.min(30, totalDuration || 30),
   ]);
 
-  const [result, setResult] = useState<SpectrogramResult | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  // A single long-lived compute worker; the data client wraps it with a cache.
+  // A single long-lived compute worker; each panel's data client wraps it.
   const [worker, setWorker] = useState<Worker | null>(null);
   useEffect(() => {
     const w = new Worker(new URL("./worker", import.meta.url), {
@@ -134,69 +229,26 @@ const LfpSpectrogramInner: FunctionComponent<InnerProps> = ({
     };
   }, []);
 
-  // Stable key so the client is only recreated when the actual selection
-  // changes (not on every render that produces a new array identity).
-  const channelsKey = selectedChannels.join(",");
-
-  // Recreate the caching client when the worker or spectrogram params change.
-  const dataClient = useMemo(() => {
-    if (!worker) return null;
-    return new SpectrogramDataClient(client, worker, {
-      channels: selectedChannels,
-      windowSize,
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [client, worker, channelsKey, windowSize]);
-
-  // Fetch/compute the block for the current visible range (debounced), keeping
-  // the previous block on screen until the new one is ready.
-  const reqRef = useRef(0);
-  useEffect(() => {
-    if (!dataClient) return;
-    if (selectedChannels.length === 0) {
-      setResult(null);
-      setLoading(false);
-      return;
-    }
-    const handle = setTimeout(() => {
-      const reqId = ++reqRef.current;
-      setLoading(true);
-      dataClient
-        .getSpectrogram(visRange[0], visRange[1])
-        .then((r) => {
-          if (reqId !== reqRef.current) return;
-          setResult(r);
-          setError(null);
-          setLoading(false);
-        })
-        .catch((err) => {
-          if (reqId !== reqRef.current) return;
-          setError(err instanceof Error ? err.message : String(err));
-          setLoading(false);
-        });
-    }, 40);
-    return () => clearTimeout(handle);
-  }, [dataClient, visRange, selectedChannels.length]);
-
   const plotHeight = Math.max(200, height - (condensed ? 70 : 96));
   const plotW = width - plotMargins.left - plotMargins.right;
 
-  // Number of channels actually averaged (bounded).
-  const numAvgChannels = Math.min(
-    Math.max(selectedChannels.length, 1),
-    MAX_AVG_CHANNELS,
+  // Channels shown, bounded (averaged together, or one panel each).
+  const shownChannels = useMemo(
+    () => limitChannels(selectedChannels, MAX_AVG_CHANNELS),
+    [selectedChannels],
   );
+  const numShown = shownChannels.length;
 
-  // Widest allowed window: keeps a block's total sample load (across the
-  // averaged channels) under MAX_BLOCK_SAMPLES. A block spans up to ~8x the
-  // visible window.
+  // Widest allowed window: keeps a block's total sample load (across the shown
+  // channels, whether averaged or stacked) under MAX_BLOCK_SAMPLES. A block
+  // spans up to ~8x the visible window.
   const maxSpan = useMemo(
     () =>
       Math.min(
         totalDuration,
-        MAX_BLOCK_SAMPLES / (8 * samplingFrequency * numAvgChannels),
+        MAX_BLOCK_SAMPLES / (8 * samplingFrequency * Math.max(numShown, 1)),
       ),
-    [totalDuration, samplingFrequency, numAvgChannels],
+    [totalDuration, samplingFrequency, numShown],
   );
 
   // Narrowest allowed window (a handful of FFT windows).
@@ -249,14 +301,18 @@ const LfpSpectrogramInner: FunctionComponent<InnerProps> = ({
   const containerRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<{ x: number; range: [number, number] } | null>(null);
 
+  // Wheel-to-zoom only in mean mode; in per-channel mode the wheel is left to
+  // scroll the stack of panels vertically (zoom via the buttons instead).
+  const wheelZoom = channelMode === "mean";
+
   // Prevent the page from scrolling while the wheel is used to zoom.
   useEffect(() => {
     const el = containerRef.current;
-    if (!el) return;
+    if (!el || !wheelZoom) return;
     const prevent = (e: WheelEvent) => e.preventDefault();
     el.addEventListener("wheel", prevent, { passive: false });
     return () => el.removeEventListener("wheel", prevent);
-  }, []);
+  }, [wheelZoom]);
 
   const timeAtClientX = useCallback(
     (clientX: number, range: [number, number]) => {
@@ -294,6 +350,7 @@ const LfpSpectrogramInner: FunctionComponent<InnerProps> = ({
 
   const handleWheel = useCallback(
     (e: React.WheelEvent) => {
+      if (!wheelZoom) return;
       if (e.deltaY === 0) return;
       const factor = e.deltaY > 0 ? 1.15 : 1 / 1.15;
       setVisRange((prev) => {
@@ -305,7 +362,7 @@ const LfpSpectrogramInner: FunctionComponent<InnerProps> = ({
         return clampRange(newStart, newStart + newSpan);
       });
     },
-    [timeAtClientX, clampRange],
+    [wheelZoom, timeAtClientX, clampRange],
   );
 
   const labeledField = (label: string, node: React.ReactNode) => (
@@ -317,14 +374,20 @@ const LfpSpectrogramInner: FunctionComponent<InnerProps> = ({
 
   const visSpan = visRange[1] - visRange[0];
   const numSel = selectedChannels.length;
+  const capped = numSel > MAX_AVG_CHANNELS;
   const channelsNote =
     numSel === 0
       ? "no channels selected"
-      : numSel === 1
-        ? "1 channel"
-        : numSel > MAX_AVG_CHANNELS
-          ? `avg of ${MAX_AVG_CHANNELS} of ${numSel} channels`
-          : `avg of ${numSel} channels`;
+      : channelMode === "mean"
+        ? numSel === 1
+          ? "1 channel"
+          : capped
+            ? `avg of ${MAX_AVG_CHANNELS} of ${numSel} channels`
+            : `avg of ${numSel} channels`
+        : capped
+          ? `${MAX_AVG_CHANNELS} of ${numSel} channels`
+          : `${numSel} channel${numSel === 1 ? "" : "s"}`;
+
   const eps = 1e-6;
   const canZoomIn = visSpan > minSpan + eps;
   const canZoomOut = visSpan < maxSpan - eps;
@@ -350,6 +413,17 @@ const LfpSpectrogramInner: FunctionComponent<InnerProps> = ({
             selected={selectedChannels}
             setSelected={setSelectedChannels}
           />,
+        )}
+
+        {labeledField(
+          "Multiple channels",
+          <select
+            value={channelMode}
+            onChange={(e) => setChannelMode(e.target.value as ChannelMode)}
+          >
+            <option value="mean">Mean (one spectrogram)</option>
+            <option value="perChannel">Separate (one per channel)</option>
+          </select>,
         )}
 
         {labeledField(
@@ -450,32 +524,57 @@ const LfpSpectrogramInner: FunctionComponent<InnerProps> = ({
         </ControlButton>
         <span style={{ fontSize: 12, color: "#555", marginLeft: 8 }}>
           {channelsNote} · {samplingFrequency.toFixed(1)} Hz · window{" "}
-          {visSpan.toFixed(2)} s · drag/scroll also works
-          {loading ? " · updating…" : ""}
-          {error ? <span style={{ color: "#e74c3c" }}> · {error}</span> : null}
+          {visSpan.toFixed(2)} s ·{" "}
+          {wheelZoom
+            ? "drag/scroll to navigate"
+            : "drag or buttons to navigate"}
         </span>
       </div>
 
       <div
         ref={containerRef}
-        style={{ cursor: dragRef.current ? "grabbing" : "grab", width }}
+        style={{
+          cursor: dragRef.current ? "grabbing" : "grab",
+          width,
+          ...(channelMode === "perChannel"
+            ? { maxHeight: plotHeight, overflowY: "auto" as const }
+            : {}),
+        }}
         onMouseDown={handleMouseDown}
         onMouseMove={handleMouseMove}
         onMouseUp={endDrag}
         onMouseLeave={endDrag}
         onWheel={handleWheel}
       >
-        <SpectrogramWidget
-          result={result}
-          width={width}
-          height={plotHeight}
-          colormap={colormap}
-          visibleStartTimeSec={visRange[0]}
-          visibleEndTimeSec={visRange[1]}
-          freqMinHz={0}
-          freqMaxHz={freqMaxHz}
-          loading={loading}
-        />
+        {!worker ? null : channelMode === "mean" ? (
+          <SpectrogramPanel
+            client={client}
+            worker={worker}
+            channels={selectedChannels}
+            windowSize={windowSize}
+            visRange={visRange}
+            width={width}
+            height={plotHeight}
+            colormap={colormap}
+            freqMaxHz={freqMaxHz}
+          />
+        ) : (
+          shownChannels.map((ch) => (
+            <SpectrogramPanel
+              key={ch}
+              client={client}
+              worker={worker}
+              channels={[ch]}
+              windowSize={windowSize}
+              visRange={visRange}
+              width={width}
+              height={PER_CHANNEL_PANEL_HEIGHT}
+              colormap={colormap}
+              freqMaxHz={freqMaxHz}
+              label={`Channel ${ch}`}
+            />
+          ))
+        )}
       </div>
     </div>
   );
