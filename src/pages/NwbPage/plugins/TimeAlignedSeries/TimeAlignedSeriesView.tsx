@@ -31,8 +31,8 @@ type Props = {
   condensed?: boolean;
 };
 
-// Use all rows unless the table has more than this many.
-const DEFAULT_MAX_INTERVALS = 1000;
+const DEFAULT_MAX_INTERVALS = 200;
+const DEFAULT_WINDOW = { start: -2.5, end: 5 };
 
 const accordionSummaryStyle: CSSProperties = {
   cursor: "pointer",
@@ -228,15 +228,18 @@ const TimeAlignedSeriesInner: FunctionComponent<InnerProps> = ({
       const parts = v.split(",");
       if (parts.length === 2) return { start: parts[0], end: parts[1] };
     }
-    return { start: "-0.5", end: "1" };
+    return {
+      start: String(DEFAULT_WINDOW.start),
+      end: String(DEFAULT_WINDOW.end),
+    };
   });
   const [maxIntervalsStr, setMaxIntervalsStr] = useState(
     () => readHashParams().get("ta_max") || String(DEFAULT_MAX_INTERVALS),
   );
   const [committed, setCommitted] = useState<CommittedParams>(() => {
     const p = readHashParams();
-    let start = -0.5;
-    let end = 1;
+    let start = DEFAULT_WINDOW.start;
+    let end = DEFAULT_WINDOW.end;
     const w = p.get("ta_win");
     if (w) {
       const [s, e] = w.split(",").map(Number);
@@ -372,7 +375,8 @@ const TimeAlignedSeriesInner: FunctionComponent<InnerProps> = ({
     setOrDelete(
       "ta_win",
       `${committed.windowRange.start},${committed.windowRange.end}`,
-      committed.windowRange.start === -0.5 && committed.windowRange.end === 1,
+      committed.windowRange.start === DEFAULT_WINDOW.start &&
+        committed.windowRange.end === DEFAULT_WINDOW.end,
     );
     setOrDelete(
       "ta_max",
