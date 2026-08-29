@@ -27,11 +27,24 @@ export const loadTimeAlignedSnippets = async (
     onProgress?: (loaded: number, total: number) => void;
   },
 ): Promise<AlignedTrial[]> => {
-  const times = alignTimes.slice(0, opts.maxIntervals);
-  const trials: (AlignedTrial | undefined)[] = new Array(times.length);
+  // Build the list of rows to load, keeping each row's original index (so
+  // group-by values still line up) and skipping rows whose alignment time is
+  // not finite (NaN alignment times are allowed in the table -- those rows are
+  // simply excluded for this alignment). The cap applies to valid rows.
+  const entries: { index: number; t: number }[] = [];
+  for (
+    let i = 0;
+    i < alignTimes.length && entries.length < opts.maxIntervals;
+    i++
+  ) {
+    const t = alignTimes[i];
+    if (isFinite(t)) entries.push({ index: i, t });
+  }
+
+  const trials: (AlignedTrial | undefined)[] = new Array(entries.length);
   const concurrency = Math.max(
     1,
-    Math.min(opts.concurrency ?? 8, times.length),
+    Math.min(opts.concurrency ?? 8, entries.length),
   );
   // Clamp the channel defensively; the selected series may have fewer channels.
   const ch = Math.max(0, Math.min(channel, client.numChannels - 1));
@@ -41,10 +54,10 @@ export const loadTimeAlignedSnippets = async (
 
   const worker = async () => {
     for (;;) {
-      const i = nextIndex++;
-      if (i >= times.length) break;
+      const k = nextIndex++;
+      if (k >= entries.length) break;
       if (opts.canceler?.canceled) break;
-      const t = times[i];
+      const { index, t } = entries[k];
       const { timestamps, data } = await client.getDataForTimeRange(
         t + windowRange.start,
         t + windowRange.end,
@@ -52,13 +65,13 @@ export const loadTimeAlignedSnippets = async (
         ch + 1,
       );
       const values = data[0] || [];
-      trials[i] = {
-        index: i,
+      trials[k] = {
+        index,
         times: timestamps.map((ts) => ts - t),
         roiValues: values,
       };
       loaded += 1;
-      opts.onProgress?.(loaded, times.length);
+      opts.onProgress?.(loaded, entries.length);
     }
   };
 

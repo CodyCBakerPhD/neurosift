@@ -33,3 +33,13 @@ export const isTimeSeriesLikeGroup = (
 
   return false;
 };
+
+// The amount of data per channel for a timeseries-like group: the number of
+// time samples (the first dimension of `data`). Used to order series so the
+// lightest one -- which loads/renders fastest -- can be the default.
+export const timeSeriesSamplesPerChannel = (
+  datasets: { name: string; shape: number[] }[],
+): number => {
+  const dataDataset = datasets.find((ds) => ds.name === "data");
+  return dataDataset?.shape[0] ?? 0;
+};

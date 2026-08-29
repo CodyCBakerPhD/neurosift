@@ -13,7 +13,10 @@ import WindowRangeComponent from "../PSTH/PSTHItemView/components/WindowRange";
 import { useCategoricalOptions } from "../PSTH/PSTHItemView/hooks/useGroupByCategories";
 import TrialAlignedSeriesWidget from "../PSTH/PSTHItemView/TrialAlignedSeriesWidget";
 import TimeseriesClient from "../simple-timeseries/TimeseriesClient";
-import { isTimeSeriesLikeGroup } from "./detection";
+import {
+  isTimeSeriesLikeGroup,
+  timeSeriesSamplesPerChannel,
+} from "./detection";
 import {
   AlignedTrial,
   loadTimeAlignedSnippets,
@@ -76,11 +79,18 @@ const TimeAlignedSeriesView: FunctionComponent<Props> = ({
 }) => {
   const { neurodataObjects } = useNeurodataObjects(nwbUrl);
 
-  // All timeseries-like objects in the file are candidate series to align.
+  // All timeseries-like objects in the file are candidate series to align,
+  // ordered ascending by amount of data per channel so the lightest (fastest to
+  // render) is first.
   const seriesOptions = useMemo(
     () =>
       neurodataObjects
         .filter((o) => o.group && isTimeSeriesLikeGroup(o.group.datasets))
+        .sort(
+          (a, b) =>
+            timeSeriesSamplesPerChannel(a.group!.datasets) -
+            timeSeriesSamplesPerChannel(b.group!.datasets),
+        )
         .map((o) => o.path),
     [neurodataObjects],
   );
@@ -880,10 +890,15 @@ const AlignBlock: FunctionComponent<AlignBlockProps> = ({
     }));
   }, [rawTrials, grouping, groupByValues]);
 
-  const countLabel =
-    numAlignTimes !== null
-      ? ` (${Math.min(numAlignTimes, maxIntervals)}${numAlignTimes > maxIntervals ? ` of ${numAlignTimes}` : ""} intervals)`
-      : "";
+  // Actual number of intervals plotted (rows with a valid alignment time,
+  // capped at maxIntervals) out of the table's total rows.
+  const countLabel = allTrials
+    ? ` (${allTrials.length}${
+        numAlignTimes !== null && allTrials.length < numAlignTimes
+          ? ` of ${numAlignTimes}`
+          : ""
+      } intervals)`
+    : "";
 
   // Memoize the per-cell trial arrays so their references stay stable across
   // re-renders (e.g. while the user edits an unrelated live control). Without
