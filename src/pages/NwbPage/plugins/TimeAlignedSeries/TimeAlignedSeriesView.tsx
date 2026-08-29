@@ -62,6 +62,25 @@ const colorForGroupIndex = (i: number) => groupPalette[i % groupPalette.length];
 const shortName = (path: string) =>
   path.split("/").filter(Boolean).pop() || path;
 
+const parentPath = (path: string) =>
+  path.split("/").slice(0, -1).join("/") || "/";
+
+// Label each series by its short name, disambiguating any names shared by more
+// than one series with the parenthesized parent location.
+const buildSeriesLabels = (paths: string[]): { [path: string]: string } => {
+  const counts: { [name: string]: number } = {};
+  for (const p of paths) {
+    const n = shortName(p);
+    counts[n] = (counts[n] || 0) + 1;
+  }
+  const labels: { [path: string]: string } = {};
+  for (const p of paths) {
+    const n = shortName(p);
+    labels[p] = counts[n] > 1 ? `${n} (${parentPath(p)})` : n;
+  }
+  return labels;
+};
+
 // The view persists its main selections in the URL hash (like the PSTH view) so
 // a link or reload restores them. Keys are prefixed to avoid colliding with
 // other views' hash params.
@@ -402,6 +421,20 @@ const TimeAlignedSeriesInner: FunctionComponent<InnerProps> = ({
     groupDisplay,
   ]);
 
+  // The list shown in the series dropdown (prepend the selected series if it is
+  // not among the options), with labels disambiguated by location.
+  const seriesRenderPaths = useMemo(
+    () =>
+      seriesOptions.includes(seriesPath)
+        ? seriesOptions
+        : [seriesPath, ...seriesOptions],
+    [seriesOptions, seriesPath],
+  );
+  const seriesLabels = useMemo(
+    () => buildSeriesLabels(seriesRenderPaths),
+    [seriesRenderPaths],
+  );
+
   const controlsWidth = 260;
   const plotAreaWidth = width - controlsWidth;
   const gap = 8;
@@ -442,12 +475,9 @@ const TimeAlignedSeriesInner: FunctionComponent<InnerProps> = ({
               style={{ width: "100%" }}
               disabled={seriesOptions.length <= 1}
             >
-              {(seriesOptions.includes(seriesPath)
-                ? seriesOptions
-                : [seriesPath, ...seriesOptions]
-              ).map((p) => (
+              {seriesRenderPaths.map((p) => (
                 <option key={p} value={p} title={p}>
-                  {shortName(p)}
+                  {seriesLabels[p] ?? shortName(p)}
                 </option>
               ))}
             </select>

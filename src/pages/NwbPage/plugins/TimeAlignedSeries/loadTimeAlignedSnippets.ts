@@ -46,6 +46,9 @@ export const loadTimeAlignedSnippets = async (
     1,
     Math.min(opts.concurrency ?? 8, entries.length),
   );
+  // Report the true denominator (valid intervals to load) up front so the
+  // progress indicator never shows the raw max-intervals cap.
+  opts.onProgress?.(0, entries.length);
   // Clamp the channel defensively; the selected series may have fewer channels.
   const ch = Math.max(0, Math.min(channel, client.numChannels - 1));
 
