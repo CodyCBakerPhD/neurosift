@@ -59,6 +59,14 @@ const colorForGroupIndex = (i: number) => groupPalette[i % groupPalette.length];
 const shortName = (path: string) =>
   path.split("/").filter(Boolean).pop() || path;
 
+// The view persists its main selections in the URL hash (like the PSTH view) so
+// a link or reload restores them. Keys are prefixed to avoid colliding with
+// other views' hash params.
+const readHashParams = (): URLSearchParams => {
+  const h = window.location.hash;
+  return new URLSearchParams(h.startsWith("#") ? h.slice(1) : h);
+};
+
 const TimeAlignedSeriesView: FunctionComponent<Props> = ({
   nwbUrl,
   path,
@@ -80,7 +88,7 @@ const TimeAlignedSeriesView: FunctionComponent<Props> = ({
   const initialSeries = secondaryPaths && secondaryPaths[0];
   const [selectedSeriesPath, setSelectedSeriesPath] = useState<
     string | undefined
-  >(initialSeries);
+  >(() => readHashParams().get("ta_series") || initialSeries);
 
   // Once the object list is known, make sure a valid series is selected.
   useEffect(() => {
@@ -174,10 +182,21 @@ const TimeAlignedSeriesInner: FunctionComponent<InnerProps> = ({
   const numChannels = client ? client.numChannels : 1;
 
   // Channel and align-to selections apply live (like the PSTH unit selector).
-  const [selectedChannels, setSelectedChannels] = useState<number[]>([0]);
-  const [alignToVariables, setAlignToVariables] = useState<string[]>([
-    "start_time",
-  ]);
+  const [selectedChannels, setSelectedChannels] = useState<number[]>(() => {
+    const v = readHashParams().get("ta_channels");
+    if (v) {
+      const arr = v
+        .split(",")
+        .map((x) => parseInt(x))
+        .filter((n) => Number.isInteger(n) && n >= 0);
+      if (arr.length > 0) return arr;
+    }
+    return [0];
+  });
+  const [alignToVariables, setAlignToVariables] = useState<string[]>(() => {
+    const v = readHashParams().get("ta_align");
+    return v ? v.split(",").filter(Boolean) : ["start_time"];
+  });
 
   // Keep the channel selection within range when the series changes.
   useEffect(() => {
@@ -193,13 +212,33 @@ const TimeAlignedSeriesInner: FunctionComponent<InnerProps> = ({
   const [windowRangeStr, setWindowRangeStr] = useState<{
     start: string;
     end: string;
-  }>({ start: "-0.5", end: "1" });
+  }>(() => {
+    const v = readHashParams().get("ta_win");
+    if (v) {
+      const parts = v.split(",");
+      if (parts.length === 2) return { start: parts[0], end: parts[1] };
+    }
+    return { start: "-0.5", end: "1" };
+  });
   const [maxIntervalsStr, setMaxIntervalsStr] = useState(
-    String(DEFAULT_MAX_INTERVALS),
+    () => readHashParams().get("ta_max") || String(DEFAULT_MAX_INTERVALS),
   );
-  const [committed, setCommitted] = useState<CommittedParams>({
-    windowRange: { start: -0.5, end: 1 },
-    maxIntervals: DEFAULT_MAX_INTERVALS,
+  const [committed, setCommitted] = useState<CommittedParams>(() => {
+    const p = readHashParams();
+    let start = -0.5;
+    let end = 1;
+    const w = p.get("ta_win");
+    if (w) {
+      const [s, e] = w.split(",").map(Number);
+      if (isFinite(s) && isFinite(e) && e > s) {
+        start = s;
+        end = e;
+      }
+    }
+    const mv = parseInt(p.get("ta_max") || "");
+    const maxIntervals =
+      Number.isFinite(mv) && mv >= 1 ? mv : DEFAULT_MAX_INTERVALS;
+    return { windowRange: { start, end }, maxIntervals };
   });
   const [paramError, setParamError] = useState<string | null>(null);
 
@@ -242,13 +281,15 @@ const TimeAlignedSeriesInner: FunctionComponent<InnerProps> = ({
   }, [stdMultiple, effectiveStdMultiple]);
   const stdPending = showStdBand && effectiveStdMultiple !== stdMultiple;
   // How to show groups: overlaid on one plot, or split into side-by-side plots.
-  const [groupDisplay, setGroupDisplay] = useState<"overlay" | "split">(
-    "overlay",
+  const [groupDisplay, setGroupDisplay] = useState<"overlay" | "split">(() =>
+    readHashParams().get("ta_groupdisp") === "split" ? "split" : "overlay",
   );
 
   // Group by (live). Only offered when the table has categorical columns.
   const categoricalOptions = useCategoricalOptions(nwbUrl, intervalsPath);
-  const [groupByVariable, setGroupByVariable] = useState<string>("");
+  const [groupByVariable, setGroupByVariable] = useState<string>(
+    () => readHashParams().get("ta_groupby") || "",
+  );
 
   const [groupByValues, setGroupByValues] = useState<string[] | undefined>(
     undefined,
@@ -287,6 +328,65 @@ const TimeAlignedSeriesInner: FunctionComponent<InnerProps> = ({
         : [];
     return cats.map((c, i) => ({ group: c, color: colorForGroupIndex(i) }));
   }, [groupByVariable, categoricalOptions, groupByValues]);
+
+  // Number of intervals (traces) per group that go into each average, capped at
+  // maxIntervals to match what is actually loaded.
+  const groupCounts = useMemo(() => {
+    if (!groupByValues) return undefined;
+    const counts: { [k: string]: number } = {};
+    for (const v of groupByValues.slice(0, committed.maxIntervals)) {
+      counts[v] = (counts[v] || 0) + 1;
+    }
+    return counts;
+  }, [groupByValues, committed.maxIntervals]);
+
+  // Persist the main selections in the URL hash.
+  useEffect(() => {
+    const p = readHashParams();
+    const setOrDelete = (k: string, val: string, isDefault: boolean) => {
+      if (val && !isDefault) p.set(k, val);
+      else p.delete(k);
+    };
+    if (seriesPath) p.set("ta_series", seriesPath);
+    else p.delete("ta_series");
+    setOrDelete(
+      "ta_channels",
+      selectedChannels.join(","),
+      selectedChannels.length === 1 && selectedChannels[0] === 0,
+    );
+    setOrDelete(
+      "ta_align",
+      alignToVariables.join(","),
+      alignToVariables.length === 1 && alignToVariables[0] === "start_time",
+    );
+    setOrDelete(
+      "ta_win",
+      `${committed.windowRange.start},${committed.windowRange.end}`,
+      committed.windowRange.start === -0.5 && committed.windowRange.end === 1,
+    );
+    setOrDelete(
+      "ta_max",
+      String(committed.maxIntervals),
+      committed.maxIntervals === DEFAULT_MAX_INTERVALS,
+    );
+    setOrDelete("ta_groupby", groupByVariable, groupByVariable === "");
+    setOrDelete(
+      "ta_groupdisp",
+      groupDisplay,
+      !(groupByVariable !== "" && groupDisplay === "split"),
+    );
+    const newHash = "#" + p.toString();
+    if (window.location.hash !== newHash) {
+      window.history.replaceState(null, "", newHash);
+    }
+  }, [
+    seriesPath,
+    selectedChannels,
+    alignToVariables,
+    committed,
+    groupByVariable,
+    groupDisplay,
+  ]);
 
   const controlsWidth = 260;
   const plotAreaWidth = width - controlsWidth;
@@ -524,7 +624,10 @@ const TimeAlignedSeriesInner: FunctionComponent<InnerProps> = ({
                     display: "inline-block",
                   }}
                 />
-                <span>{g.group}</span>
+                <span>
+                  {g.group}
+                  {groupCounts ? ` (${groupCounts[g.group] ?? 0})` : ""}
+                </span>
               </span>
             ))}
           </div>
