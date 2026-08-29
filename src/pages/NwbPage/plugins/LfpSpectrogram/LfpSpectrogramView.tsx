@@ -229,7 +229,12 @@ const LfpSpectrogramInner: FunctionComponent<InnerProps> = ({
     };
   }, []);
 
-  const plotHeight = Math.max(200, height - (condensed ? 70 : 96));
+  // Use 80% of the available height for the plot so it doesn't fill the whole
+  // page (avoids having to scroll past a full-viewport plot on large monitors).
+  const plotHeight = Math.max(
+    200,
+    Math.round((height - (condensed ? 70 : 96)) * 0.8),
+  );
   const plotW = width - plotMargins.left - plotMargins.right;
 
   // Channels shown, bounded (averaged together, or one panel each).
