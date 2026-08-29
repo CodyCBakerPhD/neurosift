@@ -61,18 +61,24 @@ export const loadTimeAlignedSnippets = async (
       if (k >= entries.length) break;
       if (opts.canceler?.canceled) break;
       const { index, t } = entries[k];
-      const { timestamps, data } = await client.getDataForTimeRange(
-        t + windowRange.start,
-        t + windowRange.end,
-        ch,
-        ch + 1,
-      );
-      const values = data[0] || [];
-      trials[k] = {
-        index,
-        times: timestamps.map((ts) => ts - t),
-        roiValues: values,
-      };
+      try {
+        const { timestamps, data } = await client.getDataForTimeRange(
+          t + windowRange.start,
+          t + windowRange.end,
+          ch,
+          ch + 1,
+        );
+        const values = data[0] || [];
+        trials[k] = {
+          index,
+          times: timestamps.map((ts) => ts - t),
+          roiValues: values,
+        };
+      } catch (err) {
+        // Skip an interval that fails to load (an out-of-range/NaN time or a
+        // transient read error) rather than failing the whole panel.
+        console.warn(`Skipping interval ${index} (t=${t}):`, err);
+      }
       loaded += 1;
       opts.onProgress?.(loaded, entries.length);
     }
