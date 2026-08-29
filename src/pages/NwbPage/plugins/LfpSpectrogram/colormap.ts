@@ -50,9 +50,38 @@ const grayscale = (value: number): Rgb => {
   return [g, g, g];
 };
 
-export type ColormapName = "viridis" | "magma" | "grayscale";
+// Diverging blue-white-red (RdBu reversed), for baseline/z-score modes where
+// zero (mid) should read as neutral and sign matters.
+const DIVERGING_STOPS: Rgb[] = [
+  [5, 48, 97],
+  [33, 102, 172],
+  [67, 147, 195],
+  [146, 197, 222],
+  [209, 229, 240],
+  [247, 247, 247],
+  [253, 219, 199],
+  [244, 165, 130],
+  [214, 96, 77],
+  [178, 24, 43],
+  [103, 0, 31],
+];
 
-export const colormapNames: ColormapName[] = ["viridis", "magma", "grayscale"];
+export type ColormapName = "viridis" | "magma" | "grayscale" | "diverging";
+
+export const colormapNames: ColormapName[] = [
+  "viridis",
+  "magma",
+  "grayscale",
+  "diverging",
+];
+
+// Sequential colormaps suitable for raw power; diverging is reserved for
+// signed (baseline/z-score) data.
+export const sequentialColormapNames: ColormapName[] = [
+  "viridis",
+  "magma",
+  "grayscale",
+];
 
 export const applyColormap = (name: ColormapName, value: number): Rgb => {
   switch (name) {
@@ -60,6 +89,8 @@ export const applyColormap = (name: ColormapName, value: number): Rgb => {
       return interpStops(MAGMA_STOPS, value);
     case "grayscale":
       return grayscale(value);
+    case "diverging":
+      return interpStops(DIVERGING_STOPS, value);
     case "viridis":
     default:
       return interpStops(VIRIDIS_STOPS, value);

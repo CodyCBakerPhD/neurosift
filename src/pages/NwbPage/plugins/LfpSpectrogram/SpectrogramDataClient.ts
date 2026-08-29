@@ -1,4 +1,5 @@
 import TimeseriesClient from "../simple-timeseries/TimeseriesClient";
+import { ComputeConfig, computeConfigKey } from "./spectralConfig";
 import { SpectrogramInput, SpectrogramResult } from "./WorkerTypes";
 
 // Target number of STFT columns computed per cached block. The visible window
@@ -60,7 +61,7 @@ export class SpectrogramDataClient {
   constructor(
     private client: TimeseriesClient,
     private worker: Worker,
-    private params: { channels: number[]; windowSize: number },
+    private params: { channels: number[]; config: ComputeConfig },
   ) {}
 
   get startTime() {
@@ -71,9 +72,9 @@ export class SpectrogramDataClient {
   }
 
   private keyFor(blockT1: number, blockT2: number): BlockKey {
-    const { channels, windowSize } = this.params;
+    const { channels, config } = this.params;
     const chans = limitChannels(channels, MAX_AVG_CHANNELS).join(",");
-    return `${chans}|${windowSize}|${blockT1.toFixed(4)}|${blockT2.toFixed(4)}`;
+    return `${chans}|${computeConfigKey(config)}|${blockT1.toFixed(4)}|${blockT2.toFixed(4)}`;
   }
 
   // Return the spectrogram block covering the given visible range, computing and
@@ -98,7 +99,7 @@ export class SpectrogramDataClient {
     }
 
     const fs = this.client.samplingFrequency;
-    const { channels, windowSize } = this.params;
+    const { channels, config } = this.params;
 
     // Load each selected channel (capped) and average their power spectra.
     const useChannels = limitChannels(channels, MAX_AVG_CHANNELS);
@@ -120,8 +121,8 @@ export class SpectrogramDataClient {
       signals,
       samplingFrequency: fs,
       signalStartTimeSec: blockT1,
-      windowSize,
       targetColumns: TARGET_COLUMNS_PER_BLOCK,
+      config,
     };
 
     const result = await this.computeInWorker(input);
