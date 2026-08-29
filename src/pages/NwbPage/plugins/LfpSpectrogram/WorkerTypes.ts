@@ -8,15 +8,16 @@ export type SpectrogramInput = {
   signalStartTimeSec: number;
   // FFT window length in number of samples (should be a power of two).
   windowSize: number;
-  // Fraction of overlap between consecutive windows in [0, 1). Used to derive
-  // the hop size when hopSize is not given explicitly.
-  overlap: number;
-  // Explicit hop (step) between consecutive windows, in samples. When provided
-  // it takes precedence over `overlap` — this is what the interactive view uses
-  // to match the number of columns to the current zoom level.
-  hopSize?: number;
+  // Desired number of output time columns for this block. The STFT is computed
+  // at a fixed fine analysis step over all samples and power is averaged into
+  // this many columns — the averaging anti-aliases the time axis before the
+  // columns are decimated to the display resolution.
+  targetColumns: number;
 };
 
+// dB power spectral density, one value per (window, frequency) bin. Values are
+// the raw per-window power (no display normalization/filtering — those are
+// applied at render time).
 export type SpectrogramResult = {
   // Row-major matrix of size numWindows x numFreqs holding power in dB.
   powers: number[];

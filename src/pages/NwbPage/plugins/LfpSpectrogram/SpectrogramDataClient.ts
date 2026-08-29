@@ -114,22 +114,14 @@ export class SpectrogramDataClient {
       }),
     );
 
-    // Choose the hop so the block yields ~TARGET_COLUMNS_PER_BLOCK columns, but
-    // never finer than a fraction of the window (avoids needless overlap).
-    const blockSamples = signals[0]?.length ?? 0;
-    let hopSize = Math.max(
-      1,
-      Math.round(blockSamples / TARGET_COLUMNS_PER_BLOCK),
-    );
-    hopSize = Math.max(hopSize, Math.floor(windowSize / 8));
-
+    // The worker computes the STFT at a fine analysis step over all samples and
+    // averages power into this many columns (anti-aliasing the time axis).
     const input: SpectrogramInput = {
       signals,
       samplingFrequency: fs,
       signalStartTimeSec: blockT1,
       windowSize,
-      overlap: 0,
-      hopSize,
+      targetColumns: TARGET_COLUMNS_PER_BLOCK,
     };
 
     const result = await this.computeInWorker(input);

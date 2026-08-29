@@ -17,7 +17,7 @@ import SpectrogramDataClient, {
   limitChannels,
   MAX_AVG_CHANNELS,
 } from "./SpectrogramDataClient";
-import SpectrogramWidget from "./SpectrogramWidget";
+import SpectrogramWidget, { NormalizationMode } from "./SpectrogramWidget";
 import { SpectrogramResult } from "./WorkerTypes";
 
 type Props = {
@@ -104,7 +104,11 @@ type PanelProps = {
   width: number;
   height: number;
   colormap: ColormapName;
+  freqMinHz: number;
   freqMaxHz: number;
+  highPassHz: number;
+  lowPassHz: number;
+  normalization: NormalizationMode;
   label?: string;
 };
 
@@ -117,7 +121,11 @@ const SpectrogramPanel: FunctionComponent<PanelProps> = ({
   width,
   height,
   colormap,
+  freqMinHz,
   freqMaxHz,
+  highPassHz,
+  lowPassHz,
+  normalization,
   label,
 }) => {
   const [result, setResult] = useState<SpectrogramResult | null>(null);
@@ -176,8 +184,11 @@ const SpectrogramPanel: FunctionComponent<PanelProps> = ({
         colormap={colormap}
         visibleStartTimeSec={visRange[0]}
         visibleEndTimeSec={visRange[1]}
-        freqMinHz={0}
+        freqMinHz={freqMinHz}
         freqMaxHz={freqMaxHz}
+        highPassHz={highPassHz}
+        lowPassHz={lowPassHz}
+        normalization={normalization}
         loading={loading}
       />
     </div>
@@ -207,8 +218,14 @@ const LfpSpectrogramInner: FunctionComponent<InnerProps> = ({
   const [selectedChannels, setSelectedChannels] = useState<number[]>([0]);
   const [windowSize, setWindowSize] = useState(512);
   const [colormap, setColormap] = useState<ColormapName>("viridis");
-  const [freqMaxHz, setFreqMaxHz] = useState(Math.min(nyquist, 150));
   const [channelMode, setChannelMode] = useState<ChannelMode>("mean");
+  const [normalization, setNormalization] = useState<NormalizationMode>("none");
+  // Display frequency range (y-axis view only).
+  const [freqMinHz, setFreqMinHz] = useState(0);
+  const [freqMaxHz, setFreqMaxHz] = useState(Math.min(nyquist, 150));
+  // Band-pass cutoffs applied to the data (default = full band, i.e. no filter).
+  const [highPassHz, setHighPassHz] = useState(0);
+  const [lowPassHz, setLowPassHz] = useState(nyquist);
 
   // Visible time window (seconds).
   const [visRange, setVisRange] = useState<[number, number]>(() => [
@@ -229,13 +246,15 @@ const LfpSpectrogramInner: FunctionComponent<InnerProps> = ({
     };
   }, []);
 
-  // Use 80% of the available height for the plot so it doesn't fill the whole
-  // page (avoids having to scroll past a full-viewport plot on large monitors).
+  // Controls live in a fixed-width left sidebar; the plot takes the rest.
+  const sidebarWidth = 220;
+  const plotAreaWidth = Math.max(240, width - sidebarWidth - 12);
+  // Use 80% of the available height so the plot doesn't fill the whole page.
   const plotHeight = Math.max(
     200,
-    Math.round((height - (condensed ? 70 : 96)) * 0.8),
+    Math.round((height - (condensed ? 8 : 12)) * 0.8),
   );
-  const plotW = width - plotMargins.left - plotMargins.right;
+  const plotW = plotAreaWidth - plotMargins.left - plotMargins.right;
 
   // Channels shown, bounded (averaged together, or one panel each).
   const shownChannels = useMemo(
@@ -399,16 +418,34 @@ const LfpSpectrogramInner: FunctionComponent<InnerProps> = ({
   const canPanLeft = visRange[0] > dataStart + eps;
   const canPanRight = visRange[1] < dataEnd - eps;
 
+  const numInput = (
+    value: number,
+    onChange: (v: number) => void,
+    opts?: { min?: number; max?: number; step?: number },
+  ) => (
+    <input
+      type="number"
+      min={opts?.min}
+      max={opts?.max}
+      step={opts?.step}
+      value={value}
+      onChange={(e) => onChange(parseFloat(e.target.value))}
+      style={{ width: 72 }}
+    />
+  );
+
   return (
-    <div style={{ width }}>
+    <div style={{ display: "flex", width, gap: 12, alignItems: "flex-start" }}>
+      {/* Left sidebar: all controls stacked vertically. */}
       <div
         style={{
+          width: sidebarWidth,
           display: "flex",
-          flexWrap: "wrap",
-          gap: "10px 18px",
+          flexDirection: "column",
+          gap: 10,
           padding: "6px 4px",
           fontSize: 13,
-          alignItems: "flex-end",
+          boxSizing: "border-box",
         }}
       >
         {labeledField(
@@ -432,6 +469,19 @@ const LfpSpectrogramInner: FunctionComponent<InnerProps> = ({
         )}
 
         {labeledField(
+          "Normalization",
+          <select
+            value={normalization}
+            onChange={(e) =>
+              setNormalization(e.target.value as NormalizationMode)
+            }
+          >
+            <option value="none">None</option>
+            <option value="whiten">1/f whitened</option>
+          </select>,
+        )}
+
+        {labeledField(
           "FFT window (samples)",
           <select
             value={windowSize}
@@ -445,21 +495,61 @@ const LfpSpectrogramInner: FunctionComponent<InnerProps> = ({
           </select>,
         )}
 
-        {labeledField(
-          "Max freq (Hz)",
-          <input
-            type="number"
-            min={1}
-            max={nyquist}
-            value={freqMaxHz}
-            onChange={(e) =>
-              setFreqMaxHz(
-                Math.max(1, Math.min(nyquist, parseFloat(e.target.value) || 1)),
-              )
-            }
-            style={{ width: 80 }}
-          />,
-        )}
+        <div style={{ display: "flex", gap: 10 }}>
+          {labeledField(
+            "High-pass (Hz)",
+            numInput(
+              highPassHz,
+              (v) =>
+                setHighPassHz(
+                  Math.max(0, Math.min(isNaN(v) ? 0 : v, lowPassHz)),
+                ),
+              { min: 0, max: nyquist },
+            ),
+          )}
+          {labeledField(
+            "Low-pass (Hz)",
+            numInput(
+              lowPassHz,
+              (v) =>
+                setLowPassHz(
+                  Math.min(
+                    nyquist,
+                    Math.max(isNaN(v) ? nyquist : v, highPassHz),
+                  ),
+                ),
+              { min: 0, max: nyquist },
+            ),
+          )}
+        </div>
+
+        <div style={{ display: "flex", gap: 10 }}>
+          {labeledField(
+            "Freq min (Hz)",
+            numInput(
+              freqMinHz,
+              (v) =>
+                setFreqMinHz(
+                  Math.max(0, Math.min(isNaN(v) ? 0 : v, freqMaxHz)),
+                ),
+              { min: 0, max: nyquist },
+            ),
+          )}
+          {labeledField(
+            "Freq max (Hz)",
+            numInput(
+              freqMaxHz,
+              (v) =>
+                setFreqMaxHz(
+                  Math.min(
+                    nyquist,
+                    Math.max(isNaN(v) ? nyquist : v, freqMinHz),
+                  ),
+                ),
+              { min: 1, max: nyquist },
+            ),
+          )}
+        </div>
 
         {labeledField(
           "Colormap",
@@ -475,6 +565,37 @@ const LfpSpectrogramInner: FunctionComponent<InnerProps> = ({
           </select>,
         )}
 
+        <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+          <ControlButton
+            onClick={() => zoomByFactor(0.5)}
+            disabled={!canZoomIn}
+            title="Zoom in (shorter time window)"
+          >
+            🔍+
+          </ControlButton>
+          <ControlButton
+            onClick={() => zoomByFactor(2)}
+            disabled={!canZoomOut}
+            title="Zoom out (longer time window)"
+          >
+            🔍-
+          </ControlButton>
+          <ControlButton
+            onClick={() => panByFraction(-0.8)}
+            disabled={!canPanLeft}
+            title="Scroll back in time"
+          >
+            ←
+          </ControlButton>
+          <ControlButton
+            onClick={() => panByFraction(0.8)}
+            disabled={!canPanRight}
+            title="Scroll forward in time"
+          >
+            →
+          </ControlButton>
+        </div>
+
         <button
           onClick={() =>
             setVisRange([dataStart, dataStart + Math.min(30, totalDuration)])
@@ -485,62 +606,29 @@ const LfpSpectrogramInner: FunctionComponent<InnerProps> = ({
             borderRadius: 4,
             background: "#f8f9fa",
             cursor: "pointer",
+            width: "fit-content",
           }}
         >
           Reset view
         </button>
-      </div>
 
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: "5px",
-          padding: "2px 4px 4px",
-        }}
-      >
-        <ControlButton
-          onClick={() => zoomByFactor(0.5)}
-          disabled={!canZoomIn}
-          title="Zoom in (shorter time window)"
-        >
-          🔍+
-        </ControlButton>
-        <ControlButton
-          onClick={() => zoomByFactor(2)}
-          disabled={!canZoomOut}
-          title="Zoom out (longer time window)"
-        >
-          🔍-
-        </ControlButton>
-        <ControlButton
-          onClick={() => panByFraction(-0.8)}
-          disabled={!canPanLeft}
-          title="Scroll back in time"
-        >
-          ←
-        </ControlButton>
-        <ControlButton
-          onClick={() => panByFraction(0.8)}
-          disabled={!canPanRight}
-          title="Scroll forward in time"
-        >
-          →
-        </ControlButton>
-        <span style={{ fontSize: 12, color: "#555", marginLeft: 8 }}>
-          {channelsNote} · {samplingFrequency.toFixed(1)} Hz · window{" "}
-          {visSpan.toFixed(2)} s ·{" "}
+        <div style={{ fontSize: 11, color: "#666", lineHeight: 1.5 }}>
+          {channelsNote}
+          <br />
+          {samplingFrequency.toFixed(1)} Hz · window {visSpan.toFixed(2)} s
+          <br />
           {wheelZoom
             ? "drag/scroll to navigate"
-            : "drag or buttons to navigate"}
-        </span>
+            : "drag or buttons; scroll list"}
+        </div>
       </div>
 
+      {/* Plot area. */}
       <div
         ref={containerRef}
         style={{
           cursor: dragRef.current ? "grabbing" : "grab",
-          width,
+          width: plotAreaWidth,
           ...(channelMode === "perChannel"
             ? { maxHeight: plotHeight, overflowY: "auto" as const }
             : {}),
@@ -558,10 +646,14 @@ const LfpSpectrogramInner: FunctionComponent<InnerProps> = ({
             channels={selectedChannels}
             windowSize={windowSize}
             visRange={visRange}
-            width={width}
+            width={plotAreaWidth}
             height={plotHeight}
             colormap={colormap}
+            freqMinHz={freqMinHz}
             freqMaxHz={freqMaxHz}
+            highPassHz={highPassHz}
+            lowPassHz={lowPassHz}
+            normalization={normalization}
           />
         ) : (
           shownChannels.map((ch) => (
@@ -572,10 +664,14 @@ const LfpSpectrogramInner: FunctionComponent<InnerProps> = ({
               channels={[ch]}
               windowSize={windowSize}
               visRange={visRange}
-              width={width}
+              width={plotAreaWidth}
               height={PER_CHANNEL_PANEL_HEIGHT}
               colormap={colormap}
+              freqMinHz={freqMinHz}
               freqMaxHz={freqMaxHz}
+              highPassHz={highPassHz}
+              lowPassHz={lowPassHz}
+              normalization={normalization}
               label={`Channel ${ch}`}
             />
           ))

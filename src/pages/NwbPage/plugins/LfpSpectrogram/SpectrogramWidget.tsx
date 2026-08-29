@@ -3,6 +3,8 @@ import { applyColormap, ColormapName } from "./colormap";
 import { plotMargins } from "./plotConstants";
 import { SpectrogramResult } from "./WorkerTypes";
 
+export type NormalizationMode = "none" | "whiten";
+
 type Props = {
   // The computed spectrogram block (covers a range at least as wide as the
   // visible window). May be null while the first block is loading.
@@ -14,16 +16,24 @@ type Props = {
   // panning/zooming is just a redraw of the cached block.
   visibleStartTimeSec: number;
   visibleEndTimeSec: number;
-  // Displayed frequency range (Hz).
+  // Displayed frequency range (Hz) — the y-axis view (does not remove data).
   freqMinHz: number;
   freqMaxHz: number;
-  // Power range (dB) mapped to the colormap; if undefined the data range is used.
-  powerMinDb?: number;
-  powerMaxDb?: number;
+  // Band-pass cutoffs (Hz): frequency content outside [highPass, lowPass] is
+  // removed from the displayed spectrogram (shown dark), separate from the
+  // display range above.
+  highPassHz: number;
+  lowPassHz: number;
+  // Power normalization: "whiten" multiplies power by frequency (1/f whitening)
+  // so the broadband 1/f tilt is flattened.
+  normalization: NormalizationMode;
   loading?: boolean;
 };
 
 const margins = plotMargins;
+
+// Colour used for frequency bins removed by the band-pass filter.
+const FILTERED_RGB: [number, number, number] = [28, 28, 28];
 
 const SpectrogramWidget: FunctionComponent<Props> = ({
   result,
@@ -34,31 +44,69 @@ const SpectrogramWidget: FunctionComponent<Props> = ({
   visibleEndTimeSec,
   freqMinHz,
   freqMaxHz,
-  powerMinDb,
-  powerMaxDb,
+  highPassHz,
+  lowPassHz,
+  normalization,
   loading,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
-  const { vMin, vMax } = useMemo(() => {
-    const lo = powerMinDb ?? result?.minPowerDb ?? 0;
-    const hi = powerMaxDb ?? result?.maxPowerDb ?? 1;
-    return { vMin: lo, vMax: hi === lo ? lo + 1 : hi };
-  }, [powerMinDb, powerMaxDb, result?.minPowerDb, result?.maxPowerDb]);
+  // Build the offscreen bitmap for the block, applying 1/f whitening and the
+  // band-pass mask per frequency row, and derive the colour scale from the
+  // in-band (post-normalization) values. All of this is at render time, so
+  // changing normalization/cutoffs is instant and needs no recompute.
+  const { offscreen, vMin, vMax } = useMemo(() => {
+    if (!result || result.numWindows === 0 || result.numFreqs === 0) {
+      return { offscreen: null, vMin: 0, vMax: 1 };
+    }
+    const { numWindows, numFreqs, powers, freqStartHz, freqStepHz } = result;
+    const whiten = normalization === "whiten";
 
-  // Render the block to an offscreen bitmap at its native resolution once; the
-  // draw step below only positions/scales it, so pan/zoom stays cheap.
-  const offscreen = useMemo(() => {
-    if (!result || result.numWindows === 0 || result.numFreqs === 0)
-      return null;
-    const { numWindows, numFreqs, powers } = result;
-    const img = new ImageData(numWindows, numFreqs);
-    const span = vMax - vMin;
+    // Per-frequency: is the bin in the pass band, and its whitening offset (dB).
+    const inBand = new Uint8Array(numFreqs);
+    const whitenOffsetDb = new Float64Array(numFreqs);
+    for (let f = 0; f < numFreqs; f++) {
+      const freq = freqStartHz + f * freqStepHz;
+      const passes = freq >= highPassHz && freq <= lowPassHz;
+      if (whiten) {
+        // 1/f whitening = multiply power by frequency; DC has no defined tilt.
+        inBand[f] = passes && freq > 0 ? 1 : 0;
+        whitenOffsetDb[f] = freq > 0 ? 10 * Math.log10(freq) : 0;
+      } else {
+        inBand[f] = passes ? 1 : 0;
+      }
+    }
+
+    // Colour-scale range over the in-band, normalized values.
+    let mn = Number.POSITIVE_INFINITY;
+    let mx = Number.NEGATIVE_INFINITY;
     for (let w = 0; w < numWindows; w++) {
+      const base = w * numFreqs;
       for (let f = 0; f < numFreqs; f++) {
-        const db = powers[w * numFreqs + f];
-        const norm = (db - vMin) / span;
-        const [r, g, b] = applyColormap(colormap, norm);
+        if (!inBand[f]) continue;
+        const v = powers[base + f] + whitenOffsetDb[f];
+        if (v < mn) mn = v;
+        if (v > mx) mx = v;
+      }
+    }
+    if (!isFinite(mn) || !isFinite(mx)) {
+      mn = 0;
+      mx = 1;
+    }
+    if (mx === mn) mx = mn + 1;
+    const span = mx - mn;
+
+    const img = new ImageData(numWindows, numFreqs);
+    for (let w = 0; w < numWindows; w++) {
+      const base = w * numFreqs;
+      for (let f = 0; f < numFreqs; f++) {
+        let r: number, g: number, b: number;
+        if (!inBand[f]) {
+          [r, g, b] = FILTERED_RGB;
+        } else {
+          const v = powers[base + f] + whitenOffsetDb[f];
+          [r, g, b] = applyColormap(colormap, (v - mn) / span);
+        }
         // Flip the frequency axis so low frequencies are at the bottom.
         const row = numFreqs - 1 - f;
         const idx = (row * numWindows + w) * 4;
@@ -72,8 +120,8 @@ const SpectrogramWidget: FunctionComponent<Props> = ({
     off.width = numWindows;
     off.height = numFreqs;
     off.getContext("2d")?.putImageData(img, 0, 0);
-    return off;
-  }, [result, colormap, vMin, vMax]);
+    return { offscreen: off, vMin: mn, vMax: mx };
+  }, [result, colormap, normalization, highPassHz, lowPassHz]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -91,7 +139,7 @@ const SpectrogramWidget: FunctionComponent<Props> = ({
     const tToX = (t: number) =>
       margins.left + ((t - visibleStartTimeSec) / visSpan) * plotW;
 
-    // Frequency range mapped from the (flipped) bitmap.
+    // Frequency range shown on the y-axis.
     const nyquist =
       (result?.freqStartHz ?? 0) +
       ((result?.numFreqs ?? 1) - 1) * (result?.freqStepHz ?? 0);
@@ -191,7 +239,7 @@ const SpectrogramWidget: FunctionComponent<Props> = ({
     ctx.restore();
 
     // Colorbar
-    if (result) {
+    if (result && offscreen) {
       const barX = width - margins.right + 24;
       const barW = 14;
       const barTop = margins.top;
@@ -214,7 +262,11 @@ const SpectrogramWidget: FunctionComponent<Props> = ({
       ctx.translate(barX + barW + 34, barTop + barH / 2);
       ctx.rotate(-Math.PI / 2);
       ctx.textAlign = "center";
-      ctx.fillText("Power (dB)", 0, 0);
+      ctx.fillText(
+        normalization === "whiten" ? "Power (dB, whitened)" : "Power (dB)",
+        0,
+        0,
+      );
       ctx.restore();
     }
   }, [
@@ -227,6 +279,7 @@ const SpectrogramWidget: FunctionComponent<Props> = ({
     visibleEndTimeSec,
     freqMinHz,
     freqMaxHz,
+    normalization,
     vMin,
     vMax,
     loading,
