@@ -1,11 +1,4 @@
-import React, {
-  useCallback,
-  useEffect,
-  useMemo,
-  useState,
-  lazy,
-  Suspense,
-} from "react";
+import React, { useEffect, useMemo, useState, lazy, Suspense } from "react";
 import {
   FixedTab,
   TabBar,
@@ -28,6 +21,7 @@ import NwbUsageScript from "./components/NwbUsageScript";
 import MultiVideoTabView from "./MultiVideoTabView";
 import IcephysTabView from "./IcephysTabView";
 import { hasExternalVideos } from "./externalVideoUtils";
+import { useSyncTabToUrl } from "./useSyncTabToUrl";
 
 const SpecificationsView = lazy(
   () => import("./SpecificationsView/SpecificationsView"),
@@ -145,8 +139,11 @@ const MainWorkspace: React.FC<MainWorkspaceProps> = ({
 
   // Check if /units exists
   useEffect(() => {
+    setDefaultUnitsPath(undefined);
+    let canceled = false;
     const checkUnits = async () => {
       const group = await getHdf5Group(nwbUrl, "/units");
+      if (canceled) return;
       // No specifications available here (the provider is set up below this
       // component), so this falls back to the known core type relationships
       if (
@@ -156,7 +153,12 @@ const MainWorkspace: React.FC<MainWorkspaceProps> = ({
         setDefaultUnitsPath("/units");
       }
     };
-    checkUnits();
+    checkUnits().catch((err) => {
+      if (!canceled) console.error(err);
+    });
+    return () => {
+      canceled = true;
+    };
   }, [nwbUrl]);
 
   // Check for authentication errors
@@ -187,19 +189,7 @@ const MainWorkspace: React.FC<MainWorkspaceProps> = ({
     ? tabsState.activeTabId
     : activeFixedTab;
 
-  const updateUrlTab = useCallback((tabId: string) => {
-    const url = new URL(window.location.href);
-    if (tabId === "widgets") {
-      url.searchParams.delete("tab");
-    } else {
-      url.searchParams.set("tab", tabId);
-    }
-    window.history.replaceState({}, "", url.toString());
-  }, []);
-
-  useEffect(() => {
-    updateUrlTab(effectiveActiveTab);
-  }, [effectiveActiveTab, updateUrlTab]);
+  useSyncTabToUrl(effectiveActiveTab);
 
   const handleFixedTabSwitch = (id: string) => {
     setActiveFixedTab(id);

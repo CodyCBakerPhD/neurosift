@@ -1,8 +1,9 @@
-import { useEffect, useReducer } from "react";
+import { useEffect, useReducer, useRef } from "react";
 import { determineObjectType } from "../ObjectTypeUtils";
 import { NwbObjectViewPlugin } from "../plugins/pluginInterface";
 import { findPluginByName } from "../plugins/registry";
-import tabsReducer, { parseSelectionItem } from "../tabsReducer";
+import tabsReducer from "../tabsReducer";
+import { parseMultiTabItem } from "../multiTabItems";
 import { TabsState } from "../Types";
 
 interface UseTabManagerProps {
@@ -30,11 +31,22 @@ export const useTabManager = ({
     tabs: [],
     activeTabId: "widgets",
   });
+  // The tab list as of the latest render, so the effect below can check for
+  // an already open tab without re-running on every state change.
+  const tabsRef = useRef(tabsState.tabs);
+  tabsRef.current = tabsState.tabs;
 
+  // Open the tab named by the URL. The URL is kept in sync with the active
+  // tab, so this also runs when the user switches tabs; a tab that is
+  // already open is simply activated without any lookups.
   useEffect(() => {
     let canceled = false;
     const load = async () => {
       if (initialTabId) {
+        if (tabsRef.current.some((t) => t.id === initialTabId)) {
+          dispatch({ type: "SWITCH_TO_TAB", id: initialTabId });
+          return;
+        }
         if (initialTabId.startsWith("view:")) {
           const a = initialTabId.split("|");
           if (a.length !== 2) {
@@ -61,12 +73,14 @@ export const useTabManager = ({
             secondaryPaths,
           });
         } else if (initialTabId.startsWith("[")) {
-          const paths = JSON.parse(initialTabId);
+          const items: string[] = JSON.parse(initialTabId);
           const objectTypes = await Promise.all(
-            paths.map((path: string) => determineObjectType(nwbUrl, path)),
+            items.map((item) =>
+              determineObjectType(nwbUrl, parseMultiTabItem(item).path),
+            ),
           );
           if (canceled) return;
-          dispatch({ type: "OPEN_MULTI_TAB", paths, objectTypes });
+          dispatch({ type: "OPEN_MULTI_TAB", paths: items, objectTypes });
         } else {
           const objectType = await determineObjectType(nwbUrl, initialTabId);
           if (canceled) return;
@@ -85,25 +99,21 @@ export const useTabManager = ({
     };
   }, [initialTabId, nwbUrl]);
 
-  const handleOpenObjectsInNewTab = async (paths: string[]) => {
-    // Selections may be plugin/launch strings ("<plugin>|<path>^..."), so the
-    // real object path must be parsed out before asking for its type — passing
-    // the raw string to determineObjectType would query a nonexistent path.
-    try {
-      if (paths.length === 1) {
-        const { path } = parseSelectionItem(paths[0]);
-        const objectType = await determineObjectType(nwbUrl, path);
-        dispatch({ type: "OPEN_TAB", id: paths[0], path, objectType });
-      } else {
-        const objectTypes = await Promise.all(
-          paths.map((p) =>
-            determineObjectType(nwbUrl, parseSelectionItem(p).path),
-          ),
-        );
-        dispatch({ type: "OPEN_MULTI_TAB", paths, objectTypes });
-      }
-    } catch (err) {
-      console.error("Failed to open objects in new tab", err);
+  // Items are the strings collected by the hierarchy view: plain paths or
+  // "plugin|path^secondary" entries. Object types are resolved for the path
+  // inside each item, not for the raw string.
+  const handleOpenObjectsInNewTab = async (items: string[]) => {
+    if (items.length === 1) {
+      const path = parseMultiTabItem(items[0]).path;
+      const objectType = await determineObjectType(nwbUrl, path);
+      dispatch({ type: "OPEN_TAB", id: path, path, objectType });
+    } else {
+      const objectTypes = await Promise.all(
+        items.map((item) =>
+          determineObjectType(nwbUrl, parseMultiTabItem(item).path),
+        ),
+      );
+      dispatch({ type: "OPEN_MULTI_TAB", paths: items, objectTypes });
     }
   };
 

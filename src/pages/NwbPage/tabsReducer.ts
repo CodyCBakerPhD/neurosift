@@ -1,6 +1,7 @@
 import { BaseTab } from "@components/tabs/tabsReducer";
 import { NwbObjectViewPlugin } from "./plugins/pluginInterface";
 import { findPluginByName } from "./plugins/registry";
+import { parseMultiTabItems } from "./multiTabItems";
 
 type MainTab = BaseTab & {
   type: "main";
@@ -140,29 +141,20 @@ const tabsReducer = (state: TabsState, action: TabsAction): TabsState => {
   }
 };
 
-// Parse a selection string. A plain object selection is just its path; a
-// plugin/launch selection is "<pluginName>|<path>[^<secondaryPath>...]".
-export const parseSelectionItem = (
-  itemString: string,
-): { path: string; pluginName?: string; secondaryPaths: string[] } => {
-  const a = itemString.split("|");
-  if (a.length <= 1) {
-    return { path: itemString, secondaryPaths: [] };
-  }
-  const b = a[1].split("^");
-  return { path: b[0], pluginName: a[0], secondaryPaths: b.slice(1) };
-};
-
-const getPathsAndPlugins = (itemStrings: string[]) => {
+// The three arrays are index-aligned with the item strings, so a plain path
+// contributes an undefined plugin and undefined secondary paths.
+export const getPathsAndPlugins = (itemStrings: string[]) => {
   const paths: string[] = [];
   const plugins: (NwbObjectViewPlugin | undefined)[] = [];
   const secondaryPathsList: (string[] | undefined)[] = [];
-  // Push to every array on each iteration so the four stay index-aligned.
-  for (const itemString of itemStrings) {
-    const { path, pluginName, secondaryPaths } = parseSelectionItem(itemString);
-    paths.push(path);
-    plugins.push(pluginName ? findPluginByName(pluginName) : undefined);
-    secondaryPathsList.push(pluginName ? secondaryPaths : undefined);
+  for (const item of parseMultiTabItems(itemStrings)) {
+    paths.push(item.path);
+    plugins.push(
+      item.pluginName !== undefined
+        ? findPluginByName(item.pluginName)
+        : undefined,
+    );
+    secondaryPathsList.push(item.secondaryPaths);
   }
   return { paths, plugins, secondaryPathsList };
 };
