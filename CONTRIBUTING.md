@@ -38,11 +38,24 @@ Before opening a pull request, please make sure the following pass:
 ```bash
 npm run format:check   # prettier (npm run format to fix)
 npm run lint           # eslint
-npx tsc --noEmit       # type checking
+npx tsc -b --noEmit    # type checking (the root tsconfig is a solution file, so -b is needed)
 npm test               # unit tests (vitest)
 ```
 
 The repository also has pre-commit hooks (formatting and codespell) that you can enable with `pre-commit install`.
+
+## Releasing the Python Package
+
+The `neurosift` package in `python/` is published to PyPI by the `Publish neurosift package` workflow when a version tag is pushed. To cut a release:
+
+1. Bump `version` in `python/pyproject.toml` and add a `CHANGELOG.md` entry, and merge that to `main`.
+2. Tag the merge commit and push the tag:
+
+   ```bash
+   git tag v0.2.16 main && git push origin v0.2.16
+   ```
+
+The workflow builds the sdist and wheel, checks that the tag matches the version in `pyproject.toml`, checks the wheel contents, and publishes through PyPI trusted publishing. The PyPI project must list this repository's `publish-neurosift-package.yml` workflow and the `pypi` GitHub environment as a trusted publisher (PyPI project page, "Publishing" tab); no API token is stored in GitHub.
 
 ## Pull Requests
 

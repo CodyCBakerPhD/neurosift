@@ -84,6 +84,7 @@ const NwbHierarchyView: FunctionComponent<Props> = ({
   const specifications = useNwbFileSpecifications();
 
   useEffect(() => {
+    let canceled = false;
     const loadLaunchablePlugins = async () => {
       const newLaunchablePluginsWithSecondaryPaths: {
         [key: string]: {
@@ -108,6 +109,7 @@ const NwbHierarchyView: FunctionComponent<Props> = ({
             defaultUnitsPath,
           },
         );
+        if (canceled) return;
         for (const plugin of plugins) {
           entries.push({
             plugin,
@@ -129,6 +131,7 @@ const NwbHierarchyView: FunctionComponent<Props> = ({
             objectType,
             neurodataObjects,
           });
+          if (canceled) return;
           for (const secondaryPaths of candidateList) {
             const ok = await plugin.canHandle({
               nwbUrl,
@@ -143,18 +146,26 @@ const NwbHierarchyView: FunctionComponent<Props> = ({
           }
         }
 
+        if (canceled) return;
         if (entries.length > 0) {
           newLaunchablePluginsWithSecondaryPaths[obj.path] = entries;
         }
       }
+      if (canceled) return;
       setLaunchablePluginsWithSecondaryPaths(
         newLaunchablePluginsWithSecondaryPaths,
       );
     };
-    loadLaunchablePlugins();
+    loadLaunchablePlugins().catch((err) => {
+      if (!canceled) console.error(err);
+    });
+    return () => {
+      canceled = true;
+    };
   }, [nwbUrl, neurodataObjects, defaultUnitsPath, specifications]);
 
   useEffect(() => {
+    let canceled = false;
     const checkInteractiveViews = async () => {
       const interactivePaths = new Set<string>();
       for (const obj of neurodataObjects) {
@@ -166,6 +177,7 @@ const NwbHierarchyView: FunctionComponent<Props> = ({
           objectType,
           { specifications },
         );
+        if (canceled) return;
         const hasInteractive = plugins.some(
           (p) => p.name !== "default" && p.name !== "PythonScript",
         );
@@ -173,9 +185,15 @@ const NwbHierarchyView: FunctionComponent<Props> = ({
           interactivePaths.add(obj.path);
         }
       }
+      if (canceled) return;
       setObjectsWithInteractiveViews(interactivePaths);
     };
-    checkInteractiveViews();
+    checkInteractiveViews().catch((err) => {
+      if (!canceled) console.error(err);
+    });
+    return () => {
+      canceled = true;
+    };
   }, [nwbUrl, neurodataObjects, specifications]);
 
   const truncateDescription = useCallback(
