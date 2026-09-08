@@ -1287,7 +1287,7 @@ const SegmentedToggle = <T extends string>({
   <div
     role="radiogroup"
     style={{
-      display: "inline-flex",
+      display: "flex",
       border: "1px solid #bbb",
       borderRadius: 4,
       overflow: "hidden",
@@ -1299,6 +1299,8 @@ const SegmentedToggle = <T extends string>({
         <label
           key={opt.value}
           style={{
+            flex: 1,
+            textAlign: "center",
             padding: "3px 10px",
             fontSize: 11,
             cursor: "pointer",
