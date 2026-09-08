@@ -44,7 +44,7 @@ export const PRESETS: Preset[] = [
     id: "rodent-gamma",
     name: "Rodent LFP — gamma",
     description:
-      "~0.5 s multitaper (NW 3), 20–120 Hz. Broadband target: smoothing is cheap here and the variance reduction from multiple tapers helps.",
+      "~0.5 s multitaper (NW 3), 20–120 Hz. Broadband target.",
     apply: (base, fs, nyq) => ({
       ...base,
       taper: "multitaper",
