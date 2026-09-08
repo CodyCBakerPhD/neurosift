@@ -613,7 +613,7 @@ const LfpSpectrogramInner: FunctionComponent<InnerProps> = ({
           />
           <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
             <span style={{ color: "#555", fontSize: 10 }}>
-              Multiple
+              Multiple channels
               {modified.has("channelMode") && (
                 <span style={{ color: "#b8860b" }}> ●</span>
               )}
@@ -1187,48 +1187,66 @@ const LfpSpectrogramInner: FunctionComponent<InnerProps> = ({
           </div>
         )}
 
+        {/* Framed plot window: hovering a plot zooms on wheel, while the
+            padding around and the gutters between plots are safe places to
+            rest the cursor and scroll the page instead. */}
         <div
-          ref={containerRef}
           style={{
-            cursor: dragRef.current ? "grabbing" : "grab",
-            width: plotAreaWidth,
+            border: "1px solid #d0d0d0",
+            borderRadius: 6,
+            padding: 12,
+            background: "#fafafa",
+            width: "fit-content",
+            maxWidth: "100%",
+            boxSizing: "border-box",
           }}
-          onMouseDown={(e) =>
-            (dragRef.current = { x: e.clientX, range: visRange })
-          }
-          onMouseMove={handleMouseMove}
-          onMouseUp={() => (dragRef.current = null)}
-          onMouseLeave={() => (dragRef.current = null)}
         >
-          {!worker ? null : config.channelMode === "mean" ? (
-            <SpectrogramPanel
-              client={client}
-              worker={worker}
-              channels={selectedChannels}
-              computeConfig={effectiveCompute}
-              display={display}
-              visRange={visRange}
-              width={plotAreaWidth}
-              height={plotHeight}
-              onAutoLimits={onAutoLimits}
-            />
-          ) : (
-            shownChannels.map((ch) => (
+          <div
+            ref={containerRef}
+            style={{
+              cursor: dragRef.current ? "grabbing" : "grab",
+              width: plotAreaWidth,
+              display: "flex",
+              flexDirection: "column",
+              gap: 16,
+            }}
+            onMouseDown={(e) =>
+              (dragRef.current = { x: e.clientX, range: visRange })
+            }
+            onMouseMove={handleMouseMove}
+            onMouseUp={() => (dragRef.current = null)}
+            onMouseLeave={() => (dragRef.current = null)}
+          >
+            {!worker ? null : config.channelMode === "mean" ? (
               <SpectrogramPanel
-                key={ch}
                 client={client}
                 worker={worker}
-                channels={[ch]}
+                channels={selectedChannels}
                 computeConfig={effectiveCompute}
                 display={display}
                 visRange={visRange}
                 width={plotAreaWidth}
-                height={PER_CHANNEL_PANEL_HEIGHT}
-                label={`Channel ${ch}`}
+                height={plotHeight}
                 onAutoLimits={onAutoLimits}
               />
-            ))
-          )}
+            ) : (
+              shownChannels.map((ch) => (
+                <SpectrogramPanel
+                  key={ch}
+                  client={client}
+                  worker={worker}
+                  channels={[ch]}
+                  computeConfig={effectiveCompute}
+                  display={display}
+                  visRange={visRange}
+                  width={plotAreaWidth}
+                  height={PER_CHANNEL_PANEL_HEIGHT}
+                  label={`Channel ${ch}`}
+                  onAutoLimits={onAutoLimits}
+                />
+              ))
+            )}
+          </div>
         </div>
       </div>
     </div>
@@ -1314,7 +1332,8 @@ const SegmentedToggle = <T extends string>({
   <div
     role="radiogroup"
     style={{
-      display: "flex",
+      display: "grid",
+      gridTemplateColumns: `repeat(${options.length}, 1fr)`,
       border: "1px solid #bbb",
       borderRadius: 4,
       overflow: "hidden",
@@ -1326,7 +1345,7 @@ const SegmentedToggle = <T extends string>({
         <label
           key={opt.value}
           style={{
-            flex: 1,
+            boxSizing: "border-box",
             textAlign: "center",
             padding: "3px 10px",
             fontSize: 11,
