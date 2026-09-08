@@ -657,7 +657,7 @@ const LfpSpectrogramInner: FunctionComponent<InnerProps> = ({
             numChannels={numChannels}
             selected={selectedChannels}
             setSelected={setSelectedChannels}
-            height={110}
+            height={220}
           />
           <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
             <span style={{ color: "#555", fontSize: 10 }}>
