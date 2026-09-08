@@ -741,10 +741,6 @@ const LfpSpectrogramInner: FunctionComponent<InnerProps> = ({
           </Labeled>
         </Section>
 
-        <Section title="Readouts">
-          <Readouts derived={derived} />
-        </Section>
-
         <Section title="Preprocessing (off by default)">
           <div style={{ display: "flex", gap: 8 }}>
             <Labeled label="High-pass" mod={modified.has("highPassHz")}>
@@ -1061,27 +1057,11 @@ const LfpSpectrogramInner: FunctionComponent<InnerProps> = ({
           </label>
         </Section>
 
-        {warnings.length > 0 && (
-          <Section title="Warnings">
-            {warnings.map((w, i) => (
-              <div
-                key={i}
-                style={{
-                  fontSize: 10,
-                  color: w.severity === "warn" ? "#b03030" : "#7a6000",
-                  marginBottom: 3,
-                }}
-              >
-                {w.severity === "warn" ? "⚠ " : "ⓘ "}
-                {w.text}
-              </div>
-            ))}
-          </Section>
-        )}
-
         <Section title="Diagnostics / actions">
           <button style={btn} onClick={toggleDiagFlip}>
-            {diagFlip ? "◀ showing Hann (press D)" : "Compare ↔ Hann (D)"}
+            {diagFlip
+              ? "◀ showing Hann · Press D to untoggle"
+              : "Compare against Hann · Press D to toggle"}
           </button>
           <button style={btn} onClick={copyParams}>
             {copied ? "Copied ✓" : "Copy parameters (JSON)"}
@@ -1101,6 +1081,28 @@ const LfpSpectrogramInner: FunctionComponent<InnerProps> = ({
               ? "All at defaults (raw power)."
               : `${modified.size} setting(s) differ from default (dotted).`}
           </div>
+        </Section>
+
+        {warnings.length > 0 && (
+          <Section title="Warnings">
+            {warnings.map((w, i) => (
+              <div
+                key={i}
+                style={{
+                  fontSize: 10,
+                  color: w.severity === "warn" ? "#b03030" : "#7a6000",
+                  marginBottom: 3,
+                }}
+              >
+                {w.severity === "warn" ? "⚠ " : "ⓘ "}
+                {w.text}
+              </div>
+            ))}
+          </Section>
+        )}
+
+        <Section title="Readouts">
+          <Readouts derived={derived} />
         </Section>
       </div>
 
