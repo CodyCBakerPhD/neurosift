@@ -1158,6 +1158,30 @@ const LfpSpectrogramInner: FunctionComponent<InnerProps> = ({
           </span>
         </div>
 
+        {diagFlip && (
+          <div
+            onClick={toggleDiagFlip}
+            title="Click or press D to return to your configured estimator"
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              padding: "4px 8px",
+              marginBottom: 4,
+              borderRadius: 3,
+              border: "1px solid #d9a300",
+              background: "#fff6d9",
+              color: "#7a5b00",
+              fontSize: 11,
+              fontWeight: 600,
+              cursor: "pointer",
+            }}
+          >
+            <span>⚠ Diagnostic view — showing Hann taper, not your configured estimator.</span>
+            <span style={{ fontWeight: 400 }}>Press D to return.</span>
+          </div>
+        )}
+
         <div
           ref={containerRef}
           style={{
