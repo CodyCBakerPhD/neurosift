@@ -363,15 +363,6 @@ const LfpSpectrogramInner: FunctionComponent<InnerProps> = ({
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<{ x: number; range: [number, number] } | null>(null);
-  const wheelZoom = config.channelMode === "mean";
-
-  useEffect(() => {
-    const el = containerRef.current;
-    if (!el || !wheelZoom) return;
-    const prevent = (e: WheelEvent) => e.preventDefault();
-    el.addEventListener("wheel", prevent, { passive: false });
-    return () => el.removeEventListener("wheel", prevent);
-  }, [wheelZoom]);
 
   const timeAtClientX = useCallback(
     (clientX: number, range: [number, number]) => {
@@ -384,6 +375,31 @@ const LfpSpectrogramInner: FunctionComponent<InnerProps> = ({
     [plotW],
   );
 
+  // Wheeling over a spectrogram canvas zooms the time axis (in both mean and
+  // split modes); wheeling anywhere else in the view is left alone so the page
+  // scrolls normally to reach more channels. A non-passive listener is needed
+  // so preventDefault can suppress the page scroll only while over a plot.
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      if (e.deltaY === 0) return;
+      const overPlot = (e.target as HTMLElement | null)?.closest?.("canvas");
+      if (!overPlot) return; // let the page scroll to reveal more channels
+      e.preventDefault();
+      const factor = e.deltaY > 0 ? 1.15 : 1 / 1.15;
+      setVisRange((prev) => {
+        const tc = timeAtClientX(e.clientX, prev);
+        const span = prev[1] - prev[0];
+        const ns = span * factor;
+        const frac = span > 0 ? (tc - prev[0]) / span : 0.5;
+        return clampRange(tc - frac * ns, tc - frac * ns + ns);
+      });
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, [timeAtClientX, clampRange]);
+
   const handleMouseMove = useCallback(
     (e: React.MouseEvent) => {
       const drag = dragRef.current;
@@ -394,20 +410,6 @@ const LfpSpectrogramInner: FunctionComponent<InnerProps> = ({
       setVisRange(clampRange(drag.range[0] - dt, drag.range[1] - dt));
     },
     [plotW, clampRange],
-  );
-  const handleWheel = useCallback(
-    (e: React.WheelEvent) => {
-      if (!wheelZoom || e.deltaY === 0) return;
-      const factor = e.deltaY > 0 ? 1.15 : 1 / 1.15;
-      setVisRange((prev) => {
-        const tc = timeAtClientX(e.clientX, prev);
-        const span = prev[1] - prev[0];
-        const ns = span * factor;
-        const frac = span > 0 ? (tc - prev[0]) / span : 0.5;
-        return clampRange(tc - frac * ns, tc - frac * ns + ns);
-      });
-    },
-    [wheelZoom, timeAtClientX, clampRange],
   );
 
   // Diagnostic Hann flip: lock color limits so the comparison is meaningful.
@@ -1107,7 +1109,7 @@ const LfpSpectrogramInner: FunctionComponent<InnerProps> = ({
           </ControlButton>
           <span style={{ fontSize: 11, color: "#555", marginLeft: 6 }}>
             window {visSpan.toFixed(2)} s · {derived.effectiveFs.toFixed(0)} Hz
-            · {wheelZoom ? "drag/scroll" : "drag + buttons"}
+            · drag / scroll over plot / buttons
           </span>
         </div>
 
@@ -1147,7 +1149,6 @@ const LfpSpectrogramInner: FunctionComponent<InnerProps> = ({
           onMouseMove={handleMouseMove}
           onMouseUp={() => (dragRef.current = null)}
           onMouseLeave={() => (dragRef.current = null)}
-          onWheel={handleWheel}
         >
           {!worker ? null : config.channelMode === "mean" ? (
             <SpectrogramPanel
