@@ -29,6 +29,7 @@ import {
   SpectralConfig,
   TaperMethod,
 } from "./spectralConfig";
+import { useSpectrogramUrlState } from "./urlState";
 import { SpectrogramResult } from "./WorkerTypes";
 
 type Props = {
@@ -81,6 +82,7 @@ const LfpSpectrogramView: FunctionComponent<Props> = ({
   return (
     <LfpSpectrogramInner
       client={client}
+      path={path}
       width={width}
       height={height}
       condensed={condensed}
@@ -219,6 +221,7 @@ const SpectrogramPanel: FunctionComponent<PanelProps> = ({
 
 type InnerProps = {
   client: TimeseriesClient;
+  path: string;
   width: number;
   height: number;
   condensed: boolean;
@@ -226,6 +229,7 @@ type InnerProps = {
 
 const LfpSpectrogramInner: FunctionComponent<InnerProps> = ({
   client,
+  path,
   width,
   height,
   condensed,
@@ -237,9 +241,22 @@ const LfpSpectrogramInner: FunctionComponent<InnerProps> = ({
   const totalDuration = dataEnd - dataStart;
   const numChannels = client.numChannels;
 
-  const [selectedChannels, setSelectedChannels] = useState<number[]>([0]);
+  // Settings that a shared URL restores: channels, spectral config, and the
+  // visible time range. Read once at mount to seed the initial state.
+  const { initial: urlInitial, persist: persistUrl } =
+    useSpectrogramUrlState(path);
+  const defaultVisRange = useMemo<[number, number]>(
+    () => [dataStart, dataStart + Math.min(30, totalDuration || 30)],
+    [dataStart, totalDuration],
+  );
+
+  const [selectedChannels, setSelectedChannels] = useState<number[]>(() =>
+    urlInitial?.channels?.length ? urlInitial.channels : [0],
+  );
   const [config, setConfig] = useState<SpectralConfig>(() =>
-    makeDefaultConfig(nativeNyquist),
+    urlInitial?.config
+      ? { ...makeDefaultConfig(nativeNyquist), ...urlInitial.config }
+      : makeDefaultConfig(nativeNyquist),
   );
   const [presetId, setPresetId] = useState<string>("");
   const [presetBase, setPresetBase] = useState<SpectralConfig | null>(null);
@@ -284,9 +301,42 @@ const LfpSpectrogramInner: FunctionComponent<InnerProps> = ({
     lastAutoRef.current = [lo, hi];
   }, []);
 
-  const [visRange, setVisRange] = useState<[number, number]>(() => [
-    dataStart,
-    dataStart + Math.min(30, totalDuration || 30),
+  const [visRange, setVisRange] = useState<[number, number]>(() => {
+    const v = urlInitial?.visRange;
+    if (v && v.length === 2) {
+      const s = Math.max(dataStart, Math.min(v[0], dataEnd));
+      const e = Math.max(s, Math.min(v[1], dataEnd));
+      if (e > s) return [s, e];
+    }
+    return defaultVisRange;
+  });
+
+  // Mirror the current view into the URL (debounced, history-replacing). When
+  // everything is at its default the slot is cleared, keeping plain links tidy.
+  const defaultConfigJson = useMemo(
+    () => JSON.stringify(makeDefaultConfig(nativeNyquist)),
+    [nativeNyquist],
+  );
+  useEffect(() => {
+    const h = setTimeout(() => {
+      const atDefault =
+        JSON.stringify(config) === defaultConfigJson &&
+        selectedChannels.length === 1 &&
+        selectedChannels[0] === 0 &&
+        visRange[0] === defaultVisRange[0] &&
+        visRange[1] === defaultVisRange[1];
+      persistUrl(
+        atDefault ? null : { config, channels: selectedChannels, visRange },
+      );
+    }, 400);
+    return () => clearTimeout(h);
+  }, [
+    config,
+    selectedChannels,
+    visRange,
+    persistUrl,
+    defaultConfigJson,
+    defaultVisRange,
   ]);
 
   const [worker, setWorker] = useState<Worker | null>(null);
