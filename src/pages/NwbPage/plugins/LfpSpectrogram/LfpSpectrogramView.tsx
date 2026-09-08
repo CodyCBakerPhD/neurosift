@@ -14,6 +14,7 @@ import ChannelSelector from "./ChannelSelector";
 import { colormapNames } from "./colormap";
 import { computeDerived, computeWarnings } from "./derived";
 import { plotMargins } from "./plotConstants";
+import { PRESETS } from "./presets";
 import SpectrogramDataClient, {
   limitChannels,
   MAX_AVG_CHANNELS,
@@ -257,6 +258,8 @@ const LfpSpectrogramInner: FunctionComponent<InnerProps> = ({
       ? { ...makeDefaultConfig(nativeNyquist), ...urlInitial.config }
       : makeDefaultConfig(nativeNyquist),
   );
+  const [presetId, setPresetId] = useState<string>("");
+  const [presetBase, setPresetBase] = useState<SpectralConfig | null>(null);
   const [diagFlip, setDiagFlip] = useState(false);
   const [copied, setCopied] = useState(false);
 
@@ -462,6 +465,26 @@ const LfpSpectrogramInner: FunctionComponent<InnerProps> = ({
     [plotW, clampRange],
   );
 
+  const applyPreset = useCallback(
+    (id: string) => {
+      const preset = PRESETS.find((p) => p.id === id);
+      setPresetId(id);
+      if (!preset) {
+        // "— none —" restores the identity defaults, matching the state when
+        // the page is first opened.
+        setConfig(makeDefaultConfig(nativeNyquist));
+        setPresetBase(null);
+        return;
+      }
+      const next = preset.apply(config, fsNative, nativeNyquist);
+      setConfig(next);
+      setPresetBase(next);
+    },
+    [config, fsNative, nativeNyquist],
+  );
+  const modifiedFromPreset =
+    presetBase != null && JSON.stringify(presetBase) !== JSON.stringify(config);
+
   // Diagnostic Hann flip: lock color limits so the comparison is meaningful.
   const toggleDiagFlip = useCallback(() => {
     setDiagFlip((prev) => {
@@ -539,6 +562,7 @@ const LfpSpectrogramInner: FunctionComponent<InnerProps> = ({
         nyquistHz: derived.nyquistHz,
         timeResolutionSec: derived.timeResolutionSec,
       },
+      preset: presetId || null,
     };
     const text = JSON.stringify(params, null, 2);
     const done = () => {
@@ -551,7 +575,7 @@ const LfpSpectrogramInner: FunctionComponent<InnerProps> = ({
       done();
     }
     console.log("Spectrogram parameters:\n" + text);
-  }, [config, derived, fsNative, shownChannels]);
+  }, [config, derived, fsNative, presetId, shownChannels]);
 
   const useManualLimits =
     config.colorLimitMode === "manual" || config.colorLimitLock;
@@ -603,6 +627,30 @@ const LfpSpectrogramInner: FunctionComponent<InnerProps> = ({
           alignSelf: "flex-start",
         }}
       >
+        <Section title="Presets">
+          <select
+            value={presetId}
+            onChange={(e) => applyPreset(e.target.value)}
+          >
+            <option value="">— none —</option>
+            {PRESETS.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}
+              </option>
+            ))}
+          </select>
+          {presetId && (
+            <div style={{ fontSize: 10, color: "#666", marginTop: 3 }}>
+              {PRESETS.find((p) => p.id === presetId)?.description}
+              {modifiedFromPreset && (
+                <span style={{ color: "#b8860b" }}>
+                  {" "}
+                  · modified from preset
+                </span>
+              )}
+            </div>
+          )}
+        </Section>
 
         <Section title="Channels">
           <ChannelSelector
@@ -1099,6 +1147,8 @@ const LfpSpectrogramInner: FunctionComponent<InnerProps> = ({
             style={btn}
             onClick={() => {
               setConfig(makeDefaultConfig(nativeNyquist));
+              setPresetId("");
+              setPresetBase(null);
             }}
           >
             Reset all to defaults
