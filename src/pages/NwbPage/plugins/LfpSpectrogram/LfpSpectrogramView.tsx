@@ -418,6 +418,9 @@ const LfpSpectrogramInner: FunctionComponent<InnerProps> = ({
       const preset = PRESETS.find((p) => p.id === id);
       setPresetId(id);
       if (!preset) {
+        // "— none —" restores the identity defaults, matching the state when
+        // the page is first opened.
+        setConfig(makeDefaultConfig(nativeNyquist));
         setPresetBase(null);
         return;
       }
@@ -601,17 +604,22 @@ const LfpSpectrogramInner: FunctionComponent<InnerProps> = ({
             setSelected={setSelectedChannels}
             height={110}
           />
-          <Labeled label="Multiple" mod={modified.has("channelMode")}>
-            <select
+          <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+            <span style={{ color: "#555", fontSize: 10 }}>
+              Multiple
+              {modified.has("channelMode") && (
+                <span style={{ color: "#b8860b" }}> ●</span>
+              )}
+            </span>
+            <SegmentedToggle
               value={config.channelMode}
-              onChange={(e) =>
-                patch({ channelMode: e.target.value as "mean" | "perChannel" })
-              }
-            >
-              <option value="mean">Mean (one spectrogram)</option>
-              <option value="perChannel">Separate (one per channel)</option>
-            </select>
-          </Labeled>
+              options={[
+                { value: "mean", label: "Average" },
+                { value: "perChannel", label: "Split" },
+              ]}
+              onChange={(v) => patch({ channelMode: v })}
+            />
+          </div>
         </Section>
 
         <Section title="Estimator">
@@ -1222,23 +1230,33 @@ const miniBtn: React.CSSProperties = {
 const Section: FunctionComponent<{
   title: string;
   children: React.ReactNode;
-}> = ({ title, children }) => (
-  <div style={{ borderTop: "1px solid #eee", paddingTop: 4 }}>
-    <div
+  defaultOpen?: boolean;
+}> = ({ title, children, defaultOpen = true }) => (
+  <details open={defaultOpen} style={{ borderTop: "1px solid #eee" }}>
+    <summary
       style={{
         fontSize: 10,
         fontWeight: 700,
         color: "#888",
         textTransform: "uppercase",
-        marginBottom: 3,
+        padding: "4px 0 3px",
+        cursor: "pointer",
+        listStyle: "revert",
       }}
     >
       {title}
-    </div>
-    <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+    </summary>
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: 5,
+        paddingBottom: 4,
+      }}
+    >
       {children}
     </div>
-  </div>
+  </details>
 );
 
 const Labeled: FunctionComponent<{
@@ -1253,6 +1271,58 @@ const Labeled: FunctionComponent<{
     </span>
     {children}
   </label>
+);
+
+// A two-or-more option segmented control, backed by radio inputs for
+// keyboard/accessibility while presenting as a single toggle strip.
+const SegmentedToggle = <T extends string>({
+  value,
+  options,
+  onChange,
+}: {
+  value: T;
+  options: { value: T; label: string }[];
+  onChange: (value: T) => void;
+}) => (
+  <div
+    role="radiogroup"
+    style={{
+      display: "inline-flex",
+      border: "1px solid #bbb",
+      borderRadius: 4,
+      overflow: "hidden",
+    }}
+  >
+    {options.map((opt, i) => {
+      const active = opt.value === value;
+      return (
+        <label
+          key={opt.value}
+          style={{
+            padding: "3px 10px",
+            fontSize: 11,
+            cursor: "pointer",
+            background: active ? "#3573b1" : "#fff",
+            color: active ? "#fff" : "#333",
+            borderLeft: i === 0 ? undefined : "1px solid #bbb",
+          }}
+        >
+          <input
+            type="radio"
+            checked={active}
+            onChange={() => onChange(opt.value)}
+            style={{
+              position: "absolute",
+              opacity: 0,
+              width: 0,
+              height: 0,
+            }}
+          />
+          {opt.label}
+        </label>
+      );
+    })}
+  </div>
 );
 
 const Readouts: FunctionComponent<{
