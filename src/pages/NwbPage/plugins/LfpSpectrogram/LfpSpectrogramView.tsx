@@ -603,7 +603,6 @@ const LfpSpectrogramInner: FunctionComponent<InnerProps> = ({
           alignSelf: "flex-start",
         }}
       >
-
         <Section title="Channels">
           <ChannelSelector
             numChannels={numChannels}
@@ -1182,7 +1181,10 @@ const LfpSpectrogramInner: FunctionComponent<InnerProps> = ({
               cursor: "pointer",
             }}
           >
-            <span>⚠ Diagnostic view — showing Hann taper, not your configured estimator.</span>
+            <span>
+              ⚠ Diagnostic view — showing Hann taper, not your configured
+              estimator.
+            </span>
             <span style={{ fontWeight: 400 }}>Press D to return.</span>
           </div>
         )}
