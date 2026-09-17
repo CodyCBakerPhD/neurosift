@@ -12,6 +12,8 @@ lerna-debug.log*
 node_modules
 dist
 dist-ssr
+# Local GitHub Pages preview build (scripts/preview_gh_pages.sh)
+dist-gh-pages
 *.local
 
 # Editor directories and files

@@ -4,6 +4,12 @@ import path from 'path'
 
 // https://vite.dev/config/
 export default defineConfig({
+  // Served from a domain root in production, so "/" is the default and the
+  // production build is unaffected. A host that serves the app from a
+  // sub-directory (a GitHub Pages project site at /<repo>/, for instance)
+  // sets NEUROSIFT_BASE_PATH to that prefix; the router picks the same value
+  // up as its basename via import.meta.env.BASE_URL.
+  base: process.env.NEUROSIFT_BASE_PATH || '/',
   plugins: [react()],
   resolve: {
     alias: {

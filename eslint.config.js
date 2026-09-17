@@ -8,6 +8,8 @@ export default tseslint.config(
   {
     ignores: [
       "dist",
+      // local GitHub Pages preview build (scripts/preview_gh_pages.sh)
+      "dist-gh-pages",
       // vendored build of niivue, not our code
       "src/pages/common/DatasetWorkspace/plugins/nifti/components/niivue_dist",
       // separate applications with their own tooling and lint setup
