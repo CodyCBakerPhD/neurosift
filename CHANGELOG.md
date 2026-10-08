@@ -1,5 +1,9 @@
 # Changes
 
+## October 8, 2026
+
+- The Spectrogram view is now offered for any ElectricalSeries whose own name or containing group's name mentions LFP (or an uppercase "LF", as in SpikeGLX LF streams), not only for objects under an "LFP" processing module. This covers acquired LFP such as iEEG stored outside `/processing`.
+
 ## October 6, 2026
 
 - The DANDI-index job runner and index builders can get embeddings from another OpenAI-compatible provider that serves `text-embedding-3-large`, such as OpenRouter, by setting `OPENAI_BASE_URL` and `OPENAI_EMBEDDING_MODEL`. Defaults are unchanged.
